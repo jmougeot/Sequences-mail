@@ -37,6 +37,20 @@ export function isOptOut(text: string): boolean {
   return OPT_OUT_PATTERNS.some((p) => normalized.includes(p));
 }
 
+/**
+ * Jeton Google révoqué ou expiré : désactive le compte pour arrêter les erreurs
+ * en boucle. Reconnecter l'adresse depuis le dashboard le réactive (les jetons
+ * sont fusionnés et le compte repasse actif).
+ */
+function handleAuthError(account: AccountRow, msg: string): boolean {
+  if (!msg.includes("invalid_grant") && !msg.includes("invalid_rapt")) return false;
+  db.prepare("UPDATE accounts SET active = 0 WHERE id = ?").run(account.id);
+  console.error(
+    `[auth] accès Google expiré/révoqué pour ${account.email} — compte désactivé, reconnectez-le via « + Connecter un compte Google »`
+  );
+  return true;
+}
+
 /** Pousse l'avancement vers Attio sans bloquer le workflow en cas d'erreur. */
 function syncAttio(attioRecordId: string | null, value: string): void {
   if (!attioRecordId) return;
@@ -204,6 +218,14 @@ async function processOne(row: DueRow): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[envoi] échec pour ${row.email} :`, msg);
+    if (handleAuthError(account, msg)) {
+      // Problème de compte, pas de contact : on retentera (autre compte ou après reconnexion)
+      db.prepare("UPDATE campaign_contacts SET next_send_at = ? WHERE id = ?").run(
+        Math.round(Date.now() + 15 * 60_000),
+        row.cc_id
+      );
+      return;
+    }
     // Retentera dans 1 à 2 h ; après 3 échecs consécutifs le contact passe en 'failed'
     const failures = (db
       .prepare("SELECT error FROM campaign_contacts WHERE id = ?")
@@ -279,7 +301,9 @@ export async function checkRepliesTick(): Promise<void> {
       attio_record_id: string | null;
     }>;
 
+  const badAccounts = new Set<number>();
   for (const row of rows) {
+    if (badAccounts.has(row.account_id)) continue;
     const account = accountById(row.account_id);
     if (!account) continue;
     try {
@@ -305,7 +329,9 @@ export async function checkRepliesTick(): Promise<void> {
         );
       }
     } catch (err) {
-      console.error(`[réponse] vérification impossible pour ${row.email} :`, err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[réponse] vérification impossible pour ${row.email} :`, msg);
+      if (handleAuthError(account, msg)) badAccounts.add(account.id); // on continue avec les autres comptes
     }
     await new Promise((r) => setTimeout(r, randBetween(300, 1200)));
   }

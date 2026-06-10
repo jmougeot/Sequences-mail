@@ -36,7 +36,8 @@
     <h2 style="margin-top:0">Comptes d'envoi (Google Workspace)</h2>
     <table id="accounts"><thead><tr><th>Email</th><th>Nom d'expéditeur</th><th>Signature</th><th>Envoyés aujourd'hui</th><th>Quota / jour</th><th>Actif</th></tr></thead><tbody></tbody></table>
     <p><a class="btn" href="/auth/google">+ Connecter un compte Google</a></p>
-    <p class="muted">Le nom apparaît dans le champ « De » des emails du compte ; la signature (variables acceptées) est ajoutée à la fin de chaque email envoyé par ce compte.</p>
+    <p class="muted">Le nom apparaît dans le champ « De » des emails du compte ; la signature (variables acceptées) est ajoutée à la fin de chaque email envoyé par ce compte.
+    Si un compte se décoche tout seul, son accès Google a été révoqué : cliquez « + Connecter un compte Google » avec la même adresse pour le réactiver.</p>
   </div>
 
   <div class="card">
@@ -126,7 +127,7 @@ function addStep() {
   const div = document.createElement("div");
   div.className = "step";
   div.innerHTML = `<b>Étape ${n}</b>
-    ${n > 1 ? '<input class="wait" type="number" value="3" min="1" style="width:70px"> jours après l\\'étape précédente' : ""}
+    ${n > 1 ? '<input class="wait" type="number" value="3" min="1" style="width:70px"> jours après l’étape précédente' : ""}
     <input class="subject" placeholder="${n === 1 ? "Sujet A (obligatoire)" : "Sujet (vide = même fil, Re:)"}">
     ${n === 1 ? '<input class="subjectB" placeholder="Sujet B (optionnel — A/B test 50/50)">' : ""}
     <textarea class="body" placeholder="Bonjour {{first_name}},&#10;..."></textarea>`;

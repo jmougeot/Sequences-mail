@@ -17,6 +17,12 @@ npm start              # ouvre http://localhost:3000
 3. Copier le client ID / secret dans `.env`.
 4. Sur le tableau de bord, cliquer **« + Connecter un compte Google »** pour chaque adresse Google Workspace à utiliser pour les envois.
 
+**Pour que la connexion dure indéfiniment** : sur l'écran *OAuth consent screen* de la console Google, l'application ne doit pas rester en mode **Testing** (les jetons y expirent au bout de 7 jours et il faudrait reconnecter les comptes chaque semaine). Deux options :
+- *User type: Internal* (recommandé avec Google Workspace) : seuls les comptes de votre organisation peuvent se connecter, aucune expiration, aucune validation Google ;
+- ou *Publishing status: In production* pour un user type External.
+
+Une fois cela fait, les jetons sont rafraîchis automatiquement et persistés en base : aucune reconnexion n'est nécessaire. Si Google révoque malgré tout un accès (changement de mot de passe, révocation manuelle…), le compte se désactive proprement dans le dashboard ; le reconnecter le réactive.
+
 ### Configuration Attio (bonus, optionnel)
 
 Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroniser depuis Attio » du tableau de bord en indiquant le slug de l'attribut statut (ex. `stage`) et les valeurs à importer.
