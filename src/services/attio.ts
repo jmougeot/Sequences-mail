@@ -13,6 +13,27 @@ function firstValue(person: AttioPerson, attr: string): Record<string, unknown> 
 }
 
 /**
+ * Écrit l'avancement de séquence sur la fiche Attio du contact
+ * (attribut texte configuré via ATTIO_STAGE_ATTRIBUTE). Silencieux si non configuré.
+ */
+export async function pushSequenceStatus(attioRecordId: string, value: string): Promise<void> {
+  if (!config.attioApiKey || !config.attioStageAttribute) return;
+  const res = await fetch(`${ATTIO_API}/objects/people/records/${attioRecordId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${config.attioApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      data: { values: { [config.attioStageAttribute]: [{ value }] } },
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Attio PATCH ${res.status} : ${await res.text()}`);
+  }
+}
+
+/**
  * Importe depuis Attio les personnes dont l'attribut `statusAttribute`
  * (slug, ex: "stage" ou un attribut select personnalisé) vaut l'un des `statuses`.
  */

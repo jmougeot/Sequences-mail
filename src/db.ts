@@ -80,3 +80,10 @@ CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts (status, next_send_at
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_messages_cc ON messages (campaign_contact_id);
 `);
+
+// Migrations additives sur les bases existantes
+const accountCols = (db.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>).map(
+  (c) => c.name
+);
+if (!accountCols.includes("from_name")) db.exec("ALTER TABLE accounts ADD COLUMN from_name TEXT");
+if (!accountCols.includes("signature")) db.exec("ALTER TABLE accounts ADD COLUMN signature TEXT");

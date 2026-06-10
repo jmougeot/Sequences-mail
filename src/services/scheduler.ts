@@ -1,7 +1,16 @@
 import { config } from "../config.js";
 import { db } from "../db.js";
+import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { sendEmail, threadHasReply, type AccountRow } from "./google.js";
+
+/** Pousse l'avancement vers Attio sans bloquer le workflow en cas d'erreur. */
+function syncAttio(attioRecordId: string | null, value: string): void {
+  if (!attioRecordId) return;
+  pushSequenceStatus(attioRecordId, value).catch((err) =>
+    console.error("[attio] mise à jour impossible :", err instanceof Error ? err.message : err)
+  );
+}
 
 const d = config.deliverability;
 
@@ -36,6 +45,7 @@ interface DueRow {
   last_name: string | null;
   company: string | null;
   extra: string | null;
+  attio_record_id: string | null;
 }
 
 interface StepRow {
@@ -103,19 +113,25 @@ async function processOne(row: DueRow): Promise<void> {
     company: row.company,
     extra: row.extra,
   };
+  const senderVars = { sender_name: account.from_name ?? account.email };
   const isFollowUp = row.current_step > 0 && !!row.thread_id;
   const firstSubject = db
     .prepare("SELECT subject FROM steps WHERE campaign_id = ? AND step_number = 1")
     .get(row.campaign_id) as { subject: string } | undefined;
   const subject = isFollowUp && !step.subject
-    ? `Re: ${renderTemplate(firstSubject?.subject ?? "", contact)}`
-    : renderTemplate(step.subject, contact);
+    ? `Re: ${renderTemplate(firstSubject?.subject ?? "", contact, senderVars)}`
+    : renderTemplate(step.subject, contact, senderVars);
+
+  let body = renderTemplate(step.body, contact, senderVars);
+  if (account.signature) {
+    body += `\n\n${renderTemplate(account.signature, contact, senderVars)}`;
+  }
 
   try {
     const result = await sendEmail(account, {
       to: row.email,
       subject,
-      body: renderTemplate(step.body, contact),
+      body,
       threadId: isFollowUp ? row.thread_id : null,
       inReplyTo: isFollowUp ? row.last_gmail_message_id : null,
     });
@@ -137,9 +153,12 @@ async function processOne(row: DueRow): Promise<void> {
     })();
 
     const next = steps.find((s) => s.step_number === step.step_number + 1);
-    if (next) scheduleNext(row.cc_id, next);
-    else {
+    if (next) {
+      scheduleNext(row.cc_id, next);
+      syncAttio(row.attio_record_id, `Étape ${step.step_number}/${steps.length} envoyée`);
+    } else {
       db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
+      syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} emails, sans réponse)`);
     }
     console.log(`[envoi] étape ${step.step_number} -> ${row.email} via ${account.email}`);
   } catch (err) {
@@ -154,6 +173,7 @@ async function processOne(row: DueRow): Promise<void> {
       db.prepare(
         "UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?"
       ).run(msg, row.cc_id);
+      syncAttio(row.attio_record_id, "Échec d'envoi ⚠️");
     } else {
       db.prepare("UPDATE campaign_contacts SET error = ?, next_send_at = ? WHERE id = ?").run(
         `retry:${count}:${msg}`,
@@ -173,7 +193,7 @@ export async function sendTick(): Promise<void> {
     .prepare(
       `SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
               cc.account_id, cc.thread_id, cc.last_gmail_message_id,
-              c.email, c.first_name, c.last_name, c.company, c.extra
+              c.email, c.first_name, c.last_name, c.company, c.extra, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        JOIN campaigns cp ON cp.id = cc.campaign_id
@@ -196,7 +216,7 @@ export async function sendTick(): Promise<void> {
 export async function checkRepliesTick(): Promise<void> {
   const rows = db
     .prepare(
-      `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id, c.email
+      `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id, c.email, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        WHERE cc.status IN ('in_progress', 'completed')
@@ -204,7 +224,13 @@ export async function checkRepliesTick(): Promise<void> {
          AND cc.replied_at IS NULL
        LIMIT 100`
     )
-    .all() as Array<{ cc_id: number; thread_id: string; account_id: number; email: string }>;
+    .all() as Array<{
+      cc_id: number;
+      thread_id: string;
+      account_id: number;
+      email: string;
+      attio_record_id: string | null;
+    }>;
 
   for (const row of rows) {
     const account = accountById(row.account_id);
@@ -214,6 +240,7 @@ export async function checkRepliesTick(): Promise<void> {
         db.prepare(
           "UPDATE campaign_contacts SET status = 'replied', replied_at = ?, next_send_at = NULL WHERE id = ?"
         ).run(Date.now(), row.cc_id);
+        syncAttio(row.attio_record_id, "A répondu ✅");
         console.log(`[réponse] ${row.email} a répondu — retiré du workflow`);
       }
     } catch (err) {

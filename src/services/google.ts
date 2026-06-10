@@ -19,6 +19,8 @@ export interface AccountRow {
   last_sent_at: number | null;
   next_allowed_at: number | null;
   active: number;
+  from_name: string | null;
+  signature: string | null;
 }
 
 function newOAuthClient(): OAuth2Client {
@@ -111,8 +113,11 @@ export async function sendEmail(
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
   const rfc822MessageId = `<${Date.now()}.${Math.random().toString(36).slice(2)}@${account.email.split("@")[1]}>`;
 
+  const from = account.from_name
+    ? `${encodeHeader(account.from_name)} <${account.email}>`
+    : account.email;
   const headers = [
-    `From: ${account.email}`,
+    `From: ${from}`,
     `To: ${opts.to}`,
     `Subject: ${encodeHeader(opts.subject)}`,
     `Message-ID: ${rfc822MessageId}`,

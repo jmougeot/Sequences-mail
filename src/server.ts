@@ -26,19 +26,30 @@ export function createServer(): express.Express {
   app.get("/api/accounts", (_req, res) => {
     const rows = db
       .prepare(
-        "SELECT id, email, daily_limit, sent_today, sent_today_date, active FROM accounts ORDER BY email"
+        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active FROM accounts ORDER BY email"
       )
       .all();
     res.json(rows);
   });
 
   app.patch("/api/accounts/:id", (req, res) => {
-    const { daily_limit, active } = req.body as { daily_limit?: number; active?: boolean };
+    const { daily_limit, active, from_name, signature } = req.body as {
+      daily_limit?: number;
+      active?: boolean;
+      from_name?: string;
+      signature?: string;
+    };
     if (daily_limit !== undefined) {
       db.prepare("UPDATE accounts SET daily_limit = ? WHERE id = ?").run(daily_limit, req.params.id);
     }
     if (active !== undefined) {
       db.prepare("UPDATE accounts SET active = ? WHERE id = ?").run(active ? 1 : 0, req.params.id);
+    }
+    if (from_name !== undefined) {
+      db.prepare("UPDATE accounts SET from_name = ? WHERE id = ?").run(from_name.trim() || null, req.params.id);
+    }
+    if (signature !== undefined) {
+      db.prepare("UPDATE accounts SET signature = ? WHERE id = ?").run(signature.trim() || null, req.params.id);
     }
     res.json({ ok: true });
   });

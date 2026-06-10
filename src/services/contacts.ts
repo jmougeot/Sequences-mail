@@ -77,7 +77,8 @@ export function parseCsv(content: string): Array<Record<string, string>> {
 /** Remplace les variables {{first_name}}, {{company}}, etc. */
 export function renderTemplate(
   template: string,
-  contact: { email: string; first_name: string | null; last_name: string | null; company: string | null; extra: string | null }
+  contact: { email: string; first_name: string | null; last_name: string | null; company: string | null; extra: string | null },
+  extraVars: Record<string, string> = {}
 ): string {
   const vars: Record<string, string> = {
     email: contact.email,
@@ -85,6 +86,7 @@ export function renderTemplate(
     last_name: contact.last_name ?? "",
     company: contact.company ?? "",
     ...(contact.extra ? (JSON.parse(contact.extra) as Record<string, string>) : {}),
+    ...extraVars,
   };
   return template.replace(/\{\{\s*([\w]+)\s*\}\}/g, (_, key: string) => vars[key] ?? "");
 }

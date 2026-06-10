@@ -14,6 +14,8 @@ export const config = {
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   },
   attioApiKey: process.env.ATTIO_API_KEY ?? "",
+  // Slug d'un attribut texte sur l'objet "people" d'Attio où écrire l'avancement de séquence
+  attioStageAttribute: process.env.ATTIO_STAGE_ATTRIBUTE ?? "",
   deliverability: {
     defaultDailyLimit: int("DEFAULT_DAILY_LIMIT", 40),
     sendWindowStart: int("SEND_WINDOW_START", 9),

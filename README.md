@@ -21,6 +21,8 @@ npm start              # ouvre http://localhost:3000
 
 Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroniser depuis Attio » du tableau de bord en indiquant le slug de l'attribut statut (ex. `stage`) et les valeurs à importer.
 
+**Mise à jour retour vers Attio** : en renseignant `ATTIO_STAGE_ATTRIBUTE` (slug d'un attribut *texte* sur l'objet « people »), l'avancement de chaque contact est écrit automatiquement sur sa fiche Attio : « Étape 2/3 envoyée », « A répondu ✅ », « Séquence terminée », « Échec d'envoi ⚠️ ». La base SQLite reste la source de vérité (transactions, aucune perte en cas d'incident) ; Attio est un miroir temps réel.
+
 ## Fonctionnement
 
 ### Campagnes et séquences
@@ -40,6 +42,7 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 - Le premier email d'un contact part du compte **le moins chargé** du jour (équilibrage automatique).
 - Les relances partent toujours **du même compte** que le premier email (continuité du fil).
 - Quota quotidien par compte configurable depuis le tableau de bord (défaut : `DEFAULT_DAILY_LIMIT`).
+- Chaque compte a son **nom d'expéditeur** (champ « De ») et sa **signature**, configurables dans le tableau de bord. La signature est ajoutée à la fin de chaque email du compte et accepte les variables. Le template peut aussi utiliser `{{sender_name}}` pour mentionner l'expéditeur dans le corps.
 
 ### Délivrabilité
 - Fenêtre d'envoi configurable (`SEND_WINDOW_START`/`END`, heures locales), envois en semaine uniquement par défaut.
