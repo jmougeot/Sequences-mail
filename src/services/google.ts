@@ -19,6 +19,8 @@ export interface AccountRow {
   last_sent_at: number | null;
   next_allowed_at: number | null;
   active: number;
+  warmup: number;
+  created_at: number;
   from_name: string | null;
   signature: string | null;
 }
@@ -166,22 +168,40 @@ function extractPlainText(part: GmailPart | undefined | null): string {
   return "";
 }
 
+export interface ForeignMessage {
+  id: string;
+  from: string;
+  subject: string;
+  text: string;
+}
+
 /**
- * Retourne le texte de la première réponse du fil (message ne venant pas du compte),
- * ou null si personne n'a répondu.
+ * Retourne tous les messages du fil ne venant pas du compte (réponses, bounces,
+ * réponses automatiques…), dans l'ordre chronologique.
  */
-export async function getThreadReply(account: AccountRow, threadId: string): Promise<string | null> {
+export async function getForeignMessages(
+  account: AccountRow,
+  threadId: string
+): Promise<ForeignMessage[]> {
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
   const { data } = await gmail.users.threads.get({
     userId: "me",
     id: threadId,
     format: "full",
   });
+  const result: ForeignMessage[] = [];
   for (const msg of data.messages ?? []) {
-    const from = msg.payload?.headers?.find((h) => h.name?.toLowerCase() === "from")?.value ?? "";
+    const header = (name: string) =>
+      msg.payload?.headers?.find((h) => h.name?.toLowerCase() === name)?.value ?? "";
+    const from = header("from");
     if (from && !from.toLowerCase().includes(account.email.toLowerCase())) {
-      return extractPlainText(msg.payload as GmailPart) || msg.snippet || "";
+      result.push({
+        id: msg.id ?? "",
+        from,
+        subject: header("subject"),
+        text: extractPlainText(msg.payload as GmailPart) || msg.snippet || "",
+      });
     }
   }
-  return null;
+  return result;
 }

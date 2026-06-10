@@ -87,6 +87,6 @@ export async function syncFromAttio(
     offset += limit;
   }
 
-  const report = importContacts(campaignId, rows, { attioRecordIds: attioIds });
+  const report = await importContacts(campaignId, rows, { attioRecordIds: attioIds });
   return { ...report, fetched: rows.length };
 }

@@ -14,11 +14,12 @@
     <h2>Comptes d'envoi (Google Workspace)</h2>
     <p id="connectedMsg" class="ok" hidden></p>
     <table id="accounts"><thead><tr>
-      <th>Email</th><th>Nom d'expéditeur</th><th>Signature</th><th>Envoyés aujourd'hui</th><th>Quota / jour</th><th>Actif</th>
+      <th>Email</th><th>Nom d'expéditeur</th><th>Signature</th><th>Envoyés aujourd'hui</th><th>Quota / jour</th><th>Warm-up</th><th>Actif</th>
     </tr></thead><tbody></tbody></table>
     <p><a class="btn" href="/auth/google">+ Connecter un compte Google</a></p>
     <p class="muted">Le nom apparaît dans le champ « De » des emails du compte ; la signature (variables acceptées) est ajoutée à la fin de chaque email envoyé par ce compte.
-    Si un compte se décoche tout seul, son accès Google a été révoqué : reconnectez la même adresse pour le réactiver.</p>
+    <b>Warm-up</b> : montée en charge automatique — un compte démarre à 10 emails/jour puis gagne +5/semaine jusqu'à son quota (recommandé pour les boîtes récentes ; décochez pour une boîte déjà rodée).
+    Si un compte se décoche tout seul (colonne Actif), son accès Google a été révoqué : reconnectez la même adresse pour le réactiver.</p>
   </div>
 
   <div class="card">
@@ -52,10 +53,12 @@ async function refresh() {
     <tr><td>${esc(a.email)}</td>
     <td><input value="${esc(a.from_name)}" placeholder="ex: Jacques M." style="width:130px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
     <td><textarea style="min-height:40px; width:220px" placeholder="Cordialement,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
-    <td>${a.sent_today_date === today ? a.sent_today : 0}</td>
-    <td><input type="number" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})"></td>
+    <td>${a.sent_today_date === today ? a.sent_today : 0} / ${a.effective_limit}</td>
+    <td><input type="number" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})">
+      ${a.warmup && a.effective_limit < a.daily_limit ? `<div class="muted">effectif : ${a.effective_limit}/j (warm-up)</div>` : ""}</td>
+    <td><input type="checkbox" ${a.warmup ? "checked" : ""} title="Montée en charge progressive" onchange="updateAccount(${a.id}, {warmup: this.checked})"></td>
     <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="updateAccount(${a.id}, {active: this.checked})"></td></tr>
-  `).join("") || '<tr><td colspan="6" class="muted">Aucun compte connecté</td></tr>';
+  `).join("") || '<tr><td colspan="7" class="muted">Aucun compte connecté</td></tr>';
 }
 
 async function loadSettings() {

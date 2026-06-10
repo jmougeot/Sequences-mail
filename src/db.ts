@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   last_sent_at INTEGER,                 -- epoch ms du dernier envoi
   next_allowed_at INTEGER,              -- epoch ms avant lequel ce compte ne doit pas renvoyer
   active INTEGER NOT NULL DEFAULT 1,
+  warmup INTEGER NOT NULL DEFAULT 1,    -- montée en charge auto : 10/j puis +5/semaine jusqu'au quota
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -59,9 +60,10 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | replied | opted_out | completed | stopped | failed
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | replied | opted_out | bounced | completed | stopped | failed
   current_step INTEGER NOT NULL DEFAULT 0, -- dernière étape envoyée (0 = aucune)
   variant TEXT,                            -- 'A' ou 'B' si A/B test sur le sujet de l'étape 1
+  handled_msgs TEXT,                       -- JSON : ids Gmail des messages déjà traités (ex. réponses auto)
   next_send_at INTEGER,                    -- epoch ms du prochain envoi prévu
   account_id INTEGER REFERENCES accounts(id), -- compte assigné au 1er envoi, fixe ensuite (continuité du fil)
   thread_id TEXT,                          -- thread Gmail
@@ -98,3 +100,5 @@ addColumnIfMissing("accounts", "signature", "signature TEXT");
 addColumnIfMissing("contacts", "do_not_contact", "do_not_contact INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("steps", "subject_b", "subject_b TEXT");
 addColumnIfMissing("campaign_contacts", "variant", "variant TEXT");
+addColumnIfMissing("campaign_contacts", "handled_msgs", "handled_msgs TEXT");
+addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");

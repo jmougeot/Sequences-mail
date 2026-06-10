@@ -1,4 +1,5 @@
 import { parse } from "csv-parse/sync";
+import { resolveMx } from "node:dns/promises";
 import { db } from "../db.js";
 
 const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company"]);
@@ -9,13 +10,43 @@ export interface ImportReport {
   errors: string[];
 }
 
+const mxCache = new Map<string, boolean>();
+
+/**
+ * Vérifie qu'un domaine peut recevoir des emails (enregistrement MX).
+ * Élimine les bounces avant l'envoi. En cas de doute (DNS indisponible,
+ * timeout…), on laisse passer : seul ENOTFOUND/ENODATA rejette.
+ */
+export async function domainAcceptsMail(domain: string): Promise<boolean> {
+  const cached = mxCache.get(domain);
+  if (cached !== undefined) return cached;
+  let ok = true;
+  try {
+    ok = (await resolveMx(domain)).length > 0;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOTFOUND" || code === "ENODATA") ok = false;
+  }
+  mxCache.set(domain, ok);
+  return ok;
+}
+
 /** Insère/met à jour les contacts puis les inscrit à la campagne (statut pending). */
-export function importContacts(
+export async function importContacts(
   campaignId: number,
   rows: Array<Record<string, string>>,
   source: { attioRecordIds?: Record<string, string> } = {}
-): ImportReport {
+): Promise<ImportReport> {
   const report: ImportReport = { imported: 0, skipped: 0, errors: [] };
+
+  // Vérification MX par domaine, en amont de la transaction (résolution DNS asynchrone)
+  const domains = new Set(
+    rows
+      .map((r) => (r.email ?? "").trim().toLowerCase().split("@")[1])
+      .filter((d): d is string => Boolean(d))
+  );
+  const domainOk = new Map<string, boolean>();
+  for (const d of domains) domainOk.set(d, await domainAcceptsMail(d));
 
   const upsertContact = db.prepare(`
     INSERT INTO contacts (email, first_name, last_name, company, extra, attio_record_id)
@@ -39,6 +70,11 @@ export function importContacts(
       if (!email || !email.includes("@")) {
         report.skipped++;
         if (email) report.errors.push(`Email invalide : ${email}`);
+        continue;
+      }
+      if (domainOk.get(email.split("@")[1]) === false) {
+        report.skipped++;
+        report.errors.push(`${email} : domaine sans serveur mail (MX introuvable)`);
         continue;
       }
       const extra: Record<string, string> = {};

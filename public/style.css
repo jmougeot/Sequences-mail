@@ -21,6 +21,7 @@ th { color:var(--muted); font-weight:600; font-size:12px; text-transform:upperca
 .pill.opted_out, .pill.stopped { background:#3d2222; color:var(--bad); }
 .pill.completed { background:#2a2f36; color:var(--text); }
 .pill.failed { background:#3d2222; color:var(--bad); }
+.pill.bounced { background:#3d2222; color:var(--bad); }
 button, .btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 14px; font-size:13px; cursor:pointer; text-decoration:none; display:inline-block; }
 button.ghost, .btn.ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
 button.danger { background:transparent; border:1px solid var(--bad); color:var(--bad); }

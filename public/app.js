@@ -34,6 +34,7 @@ const STATUS_LABELS = {
   in_progress: "en cours",
   replied: "a répondu",
   opted_out: "désinscrit",
+  bounced: "bounce",
   completed: "terminé",
   stopped: "stoppé",
   failed: "échec",

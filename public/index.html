@@ -44,7 +44,7 @@ async function refresh() {
     <tr>
       <td><a href="campaigns.html#${c.id}" style="color:var(--text)"><b>${esc(c.name)}</b></a> <span class="muted">#${c.id} · ${c.steps} étape(s)</span></td>
       <td>${pill(c.status)}</td>
-      <td>${c.contacts}</td>
+      <td>${c.contacts}${c.bounced ? ` <span class="muted" title="bounces">(${c.bounced} ⚠️)</span>` : ""}</td>
       <td>${c.emails_sent}</td>
       <td>${c.replied}${c.opted_out ? ` <span class="muted" title="désinscrits">(${c.opted_out} 🚫)</span>` : ""}</td>
       <td><b>${c.reply_rate}%</b>${c.ab_test ? `<div class="muted">A ${c.reply_rate_a}% · B ${c.reply_rate_b}%</div>` : ""}</td>

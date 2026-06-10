@@ -5,6 +5,7 @@ import { db } from "./db.js";
 import { authUrl, handleOAuthCallback } from "./services/google.js";
 import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
+import { effectiveDailyLimit } from "./services/scheduler.js";
 
 export function createServer(): express.Express {
   const app = express();
@@ -28,19 +29,23 @@ export function createServer(): express.Express {
   app.get("/api/accounts", (_req, res) => {
     const rows = db
       .prepare(
-        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active FROM accounts ORDER BY email"
+        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active, warmup, created_at FROM accounts ORDER BY email"
       )
-      .all();
-    res.json(rows);
+      .all() as Array<{ daily_limit: number; warmup: number; created_at: number }>;
+    res.json(rows.map((r) => ({ ...r, effective_limit: effectiveDailyLimit(r) })));
   });
 
   app.patch("/api/accounts/:id", (req, res) => {
-    const { daily_limit, active, from_name, signature } = req.body as {
+    const { daily_limit, active, from_name, signature, warmup } = req.body as {
       daily_limit?: number;
       active?: boolean;
       from_name?: string;
       signature?: string;
+      warmup?: boolean;
     };
+    if (warmup !== undefined) {
+      db.prepare("UPDATE accounts SET warmup = ? WHERE id = ?").run(warmup ? 1 : 0, req.params.id);
+    }
     if (daily_limit !== undefined) {
       db.prepare("UPDATE accounts SET daily_limit = ? WHERE id = ?").run(daily_limit, req.params.id);
     }
@@ -98,6 +103,7 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'in_progress') AS in_progress,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'replied') AS replied,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'opted_out') AS opted_out,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'bounced') AS bounced,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'completed') AS completed,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'failed') AS failed,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
@@ -115,7 +121,8 @@ export function createServer(): express.Express {
       contacted > 0 ? Math.round((replied / contacted) * 1000) / 10 : 0;
 
     for (const c of campaigns) {
-      const contacted = Number(c.contacts) - Number(c.pending);
+      // Les bounces n'ont jamais reçu l'email : exclus du dénominateur
+      const contacted = Number(c.contacts) - Number(c.pending) - Number(c.bounced);
       c.reply_rate = rate(Number(c.replied), contacted);
       c.progress =
         Number(c.contacts) > 0
@@ -252,7 +259,7 @@ export function createServer(): express.Express {
   });
 
   // --- Import CSV (body = contenu CSV brut) ---
-  app.post("/api/campaigns/:id/import", (req, res) => {
+  app.post("/api/campaigns/:id/import", async (req, res) => {
     const campaign = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     try {
@@ -261,7 +268,7 @@ export function createServer(): express.Express {
       if (!("email" in rows[0])) {
         return res.status(400).json({ error: "Le CSV doit contenir une colonne 'email'" });
       }
-      res.json(importContacts(Number(req.params.id), rows));
+      res.json(await importContacts(Number(req.params.id), rows));
     } catch (err) {
       res.status(400).json({ error: `CSV invalide : ${err instanceof Error ? err.message : err}` });
     }

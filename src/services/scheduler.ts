@@ -2,7 +2,7 @@ import { config } from "../config.js";
 import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
-import { getThreadReply, sendEmail, type AccountRow } from "./google.js";
+import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
 
 const OPT_OUT_PATTERNS = [
   "pas interesse",
@@ -35,6 +35,80 @@ export function isOptOut(text: string): boolean {
     .replace(/['’-]/g, " ")
     .replace(/\s+/g, " ");
   return OPT_OUT_PATTERNS.some((p) => normalized.includes(p));
+}
+
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // retire les accents (décomposés par NFD)
+    .replace(/['’-]/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+const BOUNCE_FROM = ["mailer-daemon", "postmaster", "mail delivery subsystem", "mail delivery system"];
+const BOUNCE_SUBJECTS = [
+  "undeliver",
+  "delivery status notification",
+  "delivery failed",
+  "mail delivery failed",
+  "returned to sender",
+  "address not found",
+  "echec de la remise",
+  "non remis",
+  "message non distribue",
+];
+
+/** Détecte un message de bounce (adresse invalide, boîte pleine, rejet serveur…). */
+export function isBounce(from: string, subject: string): boolean {
+  const f = normalize(from);
+  const s = normalize(subject);
+  return BOUNCE_FROM.some((p) => f.includes(p)) || BOUNCE_SUBJECTS.some((p) => s.includes(p));
+}
+
+const AUTO_REPLY_SUBJECTS = [
+  "automatic reply",
+  "auto reply",
+  "autoreply",
+  "reponse automatique",
+  "out of office",
+  "absence du bureau",
+  "auto:",
+];
+const AUTO_REPLY_TEXTS = [
+  "out of office",
+  "out of the office",
+  "absent du bureau",
+  "actuellement absent",
+  "actuellement en conge",
+  "en conges jusqu",
+  "de retour le",
+  "i am currently away",
+  "currently on leave",
+  "maternity leave",
+  "paternity leave",
+  "conge maternite",
+  "acces limite a mes emails",
+  "limited access to my email",
+  "je suis en deplacement",
+  "votre message sera traite a mon retour",
+];
+
+/** Détecte une réponse automatique d'absence (OOO) : on reporte au lieu d'arrêter. */
+export function isAutoReply(subject: string, text: string): boolean {
+  const s = normalize(subject);
+  const t = normalize(text);
+  return AUTO_REPLY_SUBJECTS.some((p) => s.includes(p)) || AUTO_REPLY_TEXTS.some((p) => t.includes(p));
+}
+
+/**
+ * Warm-up automatique : un compte démarre à 10 emails/jour puis gagne
+ * +5/semaine depuis sa connexion, jusqu'à atteindre son quota configuré.
+ */
+export function effectiveDailyLimit(a: Pick<AccountRow, "daily_limit" | "warmup" | "created_at">): number {
+  if (!a.warmup) return a.daily_limit;
+  const weeks = Math.max(0, Math.floor((Date.now() - a.created_at) / (7 * 24 * 3600 * 1000)));
+  return Math.min(a.daily_limit, 10 + 5 * weeks);
 }
 
 /**
@@ -111,18 +185,17 @@ function resetDailyCounters(): void {
   ).run(today(), today());
 }
 
-/** Choisit le compte le moins chargé, sous quota et hors période de repos. */
+/** Choisit le compte le moins chargé, sous quota effectif (warm-up) et hors repos. */
 function pickAccount(now: number): AccountRow | undefined {
-  return db
+  const candidates = db
     .prepare(
       `SELECT * FROM accounts
        WHERE active = 1
-         AND sent_today < daily_limit
          AND (next_allowed_at IS NULL OR next_allowed_at <= ?)
-       ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC
-       LIMIT 1`
+       ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC`
     )
-    .get(now) as AccountRow | undefined;
+    .all(now) as AccountRow[];
+  return candidates.find((a) => a.sent_today < effectiveDailyLimit(a));
 }
 
 function accountById(id: number): AccountRow | undefined {
@@ -152,7 +225,7 @@ async function processOne(row: DueRow): Promise<void> {
   // Continuité du fil : les relances partent toujours du compte du 1er envoi
   const account = row.account_id ? accountById(row.account_id) : pickAccount(now);
   if (!account || account.active !== 1) return; // aucun compte disponible, on retentera au prochain tick
-  if (account.sent_today >= account.daily_limit) return;
+  if (account.sent_today >= effectiveDailyLimit(account)) return;
   if (account.next_allowed_at && account.next_allowed_at > now) return;
 
   const contact = {
@@ -275,15 +348,39 @@ export async function sendTick(): Promise<void> {
   }
 }
 
+/** Retire le contact du workflow (statut terminal) et, si demandé, de toutes les campagnes. */
+function terminate(
+  row: { cc_id: number; contact_id: number; attio_record_id: string | null },
+  status: "replied" | "opted_out" | "bounced",
+  blacklist: boolean,
+  attioLabel: string
+): void {
+  db.transaction(() => {
+    db.prepare(
+      "UPDATE campaign_contacts SET status = ?, replied_at = ?, next_send_at = NULL WHERE id = ?"
+    ).run(status, Date.now(), row.cc_id);
+    if (blacklist) {
+      db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(row.contact_id);
+      db.prepare(
+        `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
+         WHERE contact_id = ? AND status IN ('pending', 'in_progress')`
+      ).run(row.contact_id);
+    }
+  })();
+  syncAttio(row.attio_record_id, attioLabel);
+}
+
 /**
- * Vérifie les fils en cours : toute réponse retire le contact du workflow.
- * Une réponse de type "pas intéressé / désinscription" passe en outre le contact
- * sur la liste do_not_contact (exclu de toutes les campagnes, actuelles et futures).
+ * Vérifie les fils en cours et classifie chaque message entrant :
+ * - bounce  -> statut 'bounced' + adresse blacklistée (protège la délivrabilité)
+ * - réponse automatique (OOO) -> la relance est reportée de ~7 jours, la séquence continue
+ * - refus / désinscription    -> 'opted_out' + liste do_not_contact globale
+ * - vraie réponse             -> 'replied', retiré du workflow
  */
 export async function checkRepliesTick(): Promise<void> {
   const rows = db
     .prepare(
-      `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id,
+      `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id, cc.status, cc.handled_msgs,
               c.id AS contact_id, c.email, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
@@ -296,6 +393,8 @@ export async function checkRepliesTick(): Promise<void> {
       cc_id: number;
       thread_id: string;
       account_id: number;
+      status: string;
+      handled_msgs: string | null;
       contact_id: number;
       email: string;
       attio_record_id: string | null;
@@ -307,25 +406,51 @@ export async function checkRepliesTick(): Promise<void> {
     const account = accountById(row.account_id);
     if (!account) continue;
     try {
-      const replyText = await getThreadReply(account, row.thread_id);
-      if (replyText !== null) {
-        const optedOut = isOptOut(replyText);
-        db.transaction(() => {
-          db.prepare(
-            "UPDATE campaign_contacts SET status = ?, replied_at = ?, next_send_at = NULL WHERE id = ?"
-          ).run(optedOut ? "opted_out" : "replied", Date.now(), row.cc_id);
-          if (optedOut) {
-            db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(row.contact_id);
-            // Stoppe aussi ses séquences dans les autres campagnes
-            db.prepare(
-              `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
-               WHERE contact_id = ? AND status IN ('pending', 'in_progress')`
-            ).run(row.contact_id);
+      const messages = await getForeignMessages(account, row.thread_id);
+      if (!messages.length) continue;
+      const handled: string[] = JSON.parse(row.handled_msgs ?? "[]");
+      let handledChanged = false;
+      let terminal = false;
+
+      for (const m of messages) {
+        if (handled.includes(m.id)) continue;
+
+        if (isBounce(m.from, m.subject)) {
+          terminate(row, "bounced", true, "Email invalide (bounce) ⚠️");
+          console.log(`[bounce] ${row.email} : adresse invalide — blacklistée, séquence arrêtée`);
+          terminal = true;
+          break;
+        }
+        if (isAutoReply(m.subject, m.text)) {
+          handled.push(m.id);
+          handledChanged = true;
+          if (row.status === "in_progress") {
+            db.prepare("UPDATE campaign_contacts SET next_send_at = ? WHERE id = ?").run(
+              Math.round(Date.now() + 7 * 24 * 3600 * 1000 + randBetween(0, 8 * 3600 * 1000)),
+              row.cc_id
+            );
+            console.log(`[ooo] ${row.email} : réponse automatique — relance reportée de ~7 jours`);
           }
-        })();
-        syncAttio(row.attio_record_id, optedOut ? "Pas intéressé / désinscrit 🚫" : "A répondu ✅");
+          continue;
+        }
+        const optedOut = isOptOut(m.text);
+        terminate(
+          row,
+          optedOut ? "opted_out" : "replied",
+          optedOut,
+          optedOut ? "Pas intéressé / désinscrit 🚫" : "A répondu ✅"
+        );
         console.log(
           `[réponse] ${row.email} ${optedOut ? "s'est désinscrit (do_not_contact)" : "a répondu"} — retiré du workflow`
+        );
+        terminal = true;
+        break;
+      }
+
+      if (handledChanged && !terminal) {
+        db.prepare("UPDATE campaign_contacts SET handled_msgs = ? WHERE id = ?").run(
+          JSON.stringify(handled),
+          row.cc_id
         );
       }
     } catch (err) {

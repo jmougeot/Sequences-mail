@@ -45,6 +45,8 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 - Le système interroge les boîtes connectées toutes les ~4–7 minutes.
 - Dès qu'un contact répond (n'importe quel message du fil qui ne vient pas du compte émetteur), il passe au statut `replied` et est **retiré du workflow** : plus aucune relance ne lui sera envoyée, même après l'envoi de la dernière étape.
 - **Détection des refus** : si la réponse contient une demande de désinscription ou un refus (« pas intéressé », « ne plus me contacter », « unsubscribe », etc.), le contact passe en `opted_out`, est ajouté à la liste globale `do_not_contact` (exclu de toutes les campagnes actuelles et futures, y compris lors d'imports ultérieurs) et sa fiche Attio est taguée « Pas intéressé / désinscrit 🚫 ».
+- **Détection des bounces** : un message de `mailer-daemon`/`postmaster` passe le contact en `bounced`, blackliste l'adresse (plus jamais contactée) et tague Attio « Email invalide ⚠️ ». Les bounces sont exclus du calcul du taux de réponse.
+- **Réponses automatiques (OOO)** : un « absent du bureau / out of office » ne stoppe pas la séquence — la relance est simplement reportée d'environ 7 jours. Une vraie réponse ultérieure est traitée normalement.
 
 ### Répartition entre comptes
 - Le premier email d'un contact part du compte **le moins chargé** du jour (équilibrage automatique).
@@ -53,6 +55,8 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 - Chaque compte a son **nom d'expéditeur** (champ « De ») et sa **signature**, configurables dans le tableau de bord. La signature est ajoutée à la fin de chaque email du compte et accepte les variables. Le template peut aussi utiliser `{{sender_name}}` pour mentionner l'expéditeur dans le corps.
 
 ### Délivrabilité
+- **Warm-up automatique** : chaque compte démarre à 10 emails/jour puis gagne +5/semaine jusqu'à son quota configuré (désactivable par compte dans Paramètres pour les boîtes déjà rodées).
+- **Vérification MX à l'import** : les adresses dont le domaine n'a pas de serveur mail sont rejetées avant tout envoi (rapport d'import détaillé), ce qui élimine la majorité des bounces.
 - Fenêtre d'envoi configurable (`SEND_WINDOW_START`/`END`, heures locales), envois en semaine uniquement par défaut.
 - Délai aléatoire de 90 à 420 s entre deux envois d'un même compte (`MIN_GAP_SECONDS`/`MAX_GAP_SECONDS`).
 - Jitter de 0 à 4 h sur la planification des relances : aucun envoi à heure fixe.
