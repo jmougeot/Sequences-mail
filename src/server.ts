@@ -1,15 +1,17 @@
 import express from "express";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { config } from "./config.js";
 import { db } from "./db.js";
 import { authUrl, handleOAuthCallback } from "./services/google.js";
-import { importContacts, parseCsv } from "./services/contacts.js";
+import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 
 export function createServer(): express.Express {
   const app = express();
   app.use(express.json({ limit: "10mb" }));
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
-  app.use(express.static(path.resolve("public")));
+  // Relatif au projet, pas au répertoire de lancement
+  app.use(express.static(fileURLToPath(new URL("../public", import.meta.url))));
 
   // --- Comptes Google ---
   app.get("/auth/google", (_req, res) => res.redirect(authUrl()));
@@ -17,7 +19,7 @@ export function createServer(): express.Express {
   app.get("/auth/google/callback", async (req, res) => {
     try {
       const email = await handleOAuthCallback(String(req.query.code ?? ""));
-      res.redirect(`/?connected=${encodeURIComponent(email)}`);
+      res.redirect(`/settings.html?connected=${encodeURIComponent(email)}`);
     } catch (err) {
       res.status(500).send(`Erreur OAuth : ${err instanceof Error ? err.message : err}`);
     }
@@ -124,6 +126,114 @@ export function createServer(): express.Express {
       c.reply_rate_b = rate(Number(c.replied_b), Number(c.contacted_b));
     }
     res.json(campaigns);
+  });
+
+  // Détail d'une campagne avec ses étapes (pour l'édition)
+  app.get("/api/campaigns/:id", (req, res) => {
+    const campaign = db
+      .prepare("SELECT id, name, status FROM campaigns WHERE id = ?")
+      .get(req.params.id);
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const steps = db
+      .prepare(
+        "SELECT step_number, subject, subject_b, body, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number"
+      )
+      .all(req.params.id);
+    res.json({ ...campaign, steps });
+  });
+
+  // Modification d'une campagne, y compris en cours : les étapes sont remplacées.
+  // Les contacts gardent leur avancement (current_step) ; les prochains envois
+  // utilisent le nouveau contenu. Un contact dont l'étape courante dépasse la
+  // nouvelle séquence sera marqué 'completed' au prochain passage.
+  app.put("/api/campaigns/:id", (req, res) => {
+    const exists = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
+    if (!exists) return res.status(404).json({ error: "Campagne introuvable" });
+    const { name, steps } = req.body as {
+      name: string;
+      steps: Array<{ subject?: string; subject_b?: string; body: string; wait_days?: number }>;
+    };
+    if (!name || !steps?.length) {
+      return res.status(400).json({ error: "name et steps[] sont requis" });
+    }
+    if (!steps[0].subject) {
+      return res.status(400).json({ error: "La première étape doit avoir un sujet" });
+    }
+    db.transaction(() => {
+      db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, req.params.id);
+      db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(req.params.id);
+      const insert = db.prepare(
+        "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days) VALUES (?, ?, ?, ?, ?, ?)"
+      );
+      steps.forEach((s, i) =>
+        insert.run(
+          req.params.id,
+          i + 1,
+          s.subject ?? "",
+          i === 0 ? s.subject_b?.trim() || null : null,
+          s.body,
+          i === 0 ? 0 : (s.wait_days ?? 3)
+        )
+      );
+    })();
+    res.json({ ok: true });
+  });
+
+  // Aperçu d'un email : rendu des variables avec un vrai contact de la campagne
+  // (le premier) ou un contact d'exemple, signature du compte incluse.
+  app.post("/api/preview", (req, res) => {
+    const { subject, body, account_id, campaign_id } = req.body as {
+      subject?: string;
+      body?: string;
+      account_id?: number;
+      campaign_id?: number;
+    };
+    const contact = (campaign_id
+      ? db
+          .prepare(
+            `SELECT c.email, c.first_name, c.last_name, c.company, c.extra
+             FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+             WHERE cc.campaign_id = ? ORDER BY cc.id LIMIT 1`
+          )
+          .get(campaign_id)
+      : undefined) as
+      | { email: string; first_name: string | null; last_name: string | null; company: string | null; extra: string | null }
+      | undefined;
+    const sample = contact ?? {
+      email: "marie.dupont@exemple.fr",
+      first_name: "Marie",
+      last_name: "Dupont",
+      company: "Exemple SAS",
+      extra: null,
+    };
+    const account = (account_id
+      ? db.prepare("SELECT email, from_name, signature FROM accounts WHERE id = ?").get(account_id)
+      : db.prepare("SELECT email, from_name, signature FROM accounts WHERE active = 1 ORDER BY id LIMIT 1").get()) as
+      | { email: string; from_name: string | null; signature: string | null }
+      | undefined;
+    const senderVars = { sender_name: account?.from_name ?? account?.email ?? "Votre nom" };
+
+    let renderedBody = renderTemplate(body ?? "", sample, senderVars);
+    if (account?.signature) {
+      renderedBody += `\n\n${renderTemplate(account.signature, sample, senderVars)}`;
+    }
+    res.json({
+      from: account ? (account.from_name ? `${account.from_name} <${account.email}>` : account.email) : "(aucun compte connecté)",
+      to: sample.email,
+      sample_contact: !contact,
+      subject: renderTemplate(subject ?? "", sample, senderVars),
+      body: renderedBody,
+    });
+  });
+
+  // Paramètres effectifs (lecture seule, issus du .env)
+  app.get("/api/settings", (_req, res) => {
+    res.json({
+      deliverability: config.deliverability,
+      google_configured: Boolean(config.google.clientId),
+      attio_configured: Boolean(config.attioApiKey),
+      attio_stage_attribute: config.attioStageAttribute || null,
+    });
   });
 
   app.post("/api/campaigns/:id/pause", (req, res) => {

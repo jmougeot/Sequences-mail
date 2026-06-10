@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence Mail — Campagnes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Campagnes</h1>
+
+  <div class="row">
+    <div class="card" style="flex:0 0 260px">
+      <h2>Mes campagnes</h2>
+      <div id="list"></div>
+      <p style="margin-bottom:0"><button onclick="newCampaign()">+ Nouvelle campagne</button></p>
+    </div>
+
+    <div class="grow">
+      <div class="card" id="editorCard">
+        <div class="inline" style="justify-content:space-between">
+          <h2 id="editorTitle" style="margin:0">Nouvelle campagne</h2>
+          <span id="statusZone"></span>
+        </div>
+        <input id="campName" placeholder="Nom de la campagne">
+        <div id="steps"></div>
+        <p>
+          <button class="ghost" onclick="addStep()">+ Ajouter une étape</button>
+          <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
+          <span id="campMsg"></span>
+        </p>
+        <p class="muted">Variables : {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}} + toute colonne CSV.
+        Une relance sans sujet part dans le même fil (Re:). La signature du compte d'envoi est ajoutée automatiquement.<br>
+        Modifier une campagne en cours est possible : les contacts gardent leur avancement, les prochains envois utilisent le nouveau contenu.</p>
+      </div>
+
+      <div class="card" id="previewCard" hidden>
+        <div class="inline" style="justify-content:space-between">
+          <h2 style="margin:0">Aperçu</h2>
+          <div class="inline">
+            <span class="muted">Compte :</span>
+            <select id="previewAccount" style="width:auto" onchange="rerunPreview()"></select>
+            <button class="ghost" onclick="$('#previewCard').hidden = true">Fermer</button>
+          </div>
+        </div>
+        <div class="preview" id="previewBody" style="margin-top:10px"></div>
+        <p class="muted" id="previewNote"></p>
+      </div>
+
+      <div class="card" id="importCard" hidden>
+        <h2>Ajouter des contacts à « <span id="importName"></span> »</h2>
+        <div class="row">
+          <div class="grow">
+            <h3 style="margin-top:0">Import CSV</h3>
+            <input id="csvFile" type="file" accept=".csv">
+            <p class="muted">Colonnes : email (obligatoire), first_name, last_name, company, …</p>
+            <button onclick="importCsv()">Importer</button> <span id="csvMsg" class="muted"></span>
+          </div>
+          <div class="grow">
+            <h3 style="margin-top:0">Synchroniser depuis Attio</h3>
+            <input id="attioAttr" placeholder="Slug de l'attribut statut (ex: stage)">
+            <input id="attioStatuses" placeholder="Statuts, séparés par des virgules">
+            <button onclick="attioSync()">Synchroniser</button> <span id="attioMsg" class="muted"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="contactsCard" hidden>
+        <h2>Contacts</h2>
+        <table id="contacts"><thead><tr>
+          <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
+        </tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav("campaigns.html");
+
+let selectedId = null;   // null = création
+let accounts = [];
+let previewStepDiv = null;
+
+async function loadList() {
+  const campaigns = await api("/api/campaigns");
+  $("#list").innerHTML = campaigns.map(c => `
+    <div class="list-item ${c.id === selectedId ? "selected" : ""}" onclick="selectCampaign(${c.id})">
+      <b>${esc(c.name)}</b> ${pill(c.status)}<br>
+      <span class="muted">${c.contacts} contacts · ${c.reply_rate}% de réponses</span>
+    </div>
+  `).join("") || '<p class="muted">Aucune campagne.</p>';
+  return campaigns;
+}
+
+function stepHtml(n, s) {
+  s = s || {};
+  return `<div class="step">
+    <div class="head">
+      <b>Étape ${n}</b>
+      <span>
+        ${n > 1 ? `<input class="wait" type="number" value="${s.wait_days ?? 3}" min="1" style="width:60px"> <span class="muted">jours après l’étape précédente</span>` : ""}
+        ${n > 1 ? `<button class="danger" onclick="this.closest('.step').remove(); renumberSteps()">✕</button>` : ""}
+      </span>
+    </div>
+    <input class="subject" placeholder="${n === 1 ? "Sujet A (obligatoire)" : "Sujet (vide = même fil, Re:)"}" value="${esc(s.subject)}">
+    ${n === 1 ? `<input class="subjectB" placeholder="Sujet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
+    <textarea class="body" placeholder="Bonjour {{first_name}},&#10;...">${esc(s.body)}</textarea>
+    <button class="ghost" onclick="previewStep(this.closest('.step'))">👁 Aperçu</button>
+  </div>`;
+}
+
+function renumberSteps() {
+  $$("#steps .step").forEach((div, i) => {
+    div.querySelector(".head b").textContent = `Étape ${i + 1}`;
+  });
+}
+
+function addStep(s) {
+  const n = $$("#steps .step").length + 1;
+  $("#steps").insertAdjacentHTML("beforeend", stepHtml(n, s));
+}
+
+function readSteps() {
+  return $$("#steps .step").map(div => ({
+    subject: div.querySelector(".subject").value,
+    subject_b: div.querySelector(".subjectB")?.value || undefined,
+    body: div.querySelector(".body").value,
+    wait_days: +(div.querySelector(".wait")?.value ?? 0),
+  }));
+}
+
+function newCampaign() {
+  selectedId = null;
+  location.hash = "new";
+  $("#editorTitle").textContent = "Nouvelle campagne";
+  $("#saveBtn").textContent = "Créer la campagne";
+  $("#statusZone").innerHTML = "";
+  $("#campName").value = "";
+  $("#campMsg").textContent = "";
+  $("#steps").innerHTML = "";
+  addStep();
+  $("#importCard").hidden = true;
+  $("#contactsCard").hidden = true;
+  $("#previewCard").hidden = true;
+  loadList();
+}
+
+async function selectCampaign(id) {
+  selectedId = id;
+  location.hash = String(id);
+  const c = await api(`/api/campaigns/${id}`);
+  $("#editorTitle").textContent = `Modifier « ${c.name} »`;
+  $("#saveBtn").textContent = "Enregistrer les modifications";
+  $("#statusZone").innerHTML = `${pill(c.status)}
+    <button class="ghost" onclick="toggleStatus(${id}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Reprendre"}</button>`;
+  $("#campName").value = c.name;
+  $("#campMsg").textContent = "";
+  $("#steps").innerHTML = "";
+  c.steps.forEach(s => addStep(s));
+  $("#importCard").hidden = false;
+  $("#importName").textContent = c.name;
+  $("#contactsCard").hidden = false;
+  loadContacts();
+  loadList();
+}
+
+async function toggleStatus(id, status) {
+  await api(`/api/campaigns/${id}/${status === "active" ? "pause" : "resume"}`, { method: "POST" });
+  selectCampaign(id);
+}
+
+async function saveCampaign() {
+  const payload = { name: $("#campName").value, steps: readSteps() };
+  const msg = $("#campMsg");
+  try {
+    if (selectedId) {
+      await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      msg.textContent = "Modifications enregistrées ✓";
+    } else {
+      const { id } = await api("/api/campaigns", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      msg.textContent = `Campagne #${id} créée ✓`;
+      await selectCampaign(id);
+    }
+    msg.className = "ok";
+    loadList();
+  } catch (e) { msg.textContent = e.message; msg.className = "err"; }
+}
+
+// --- Aperçu ---
+async function previewStep(stepDiv) {
+  previewStepDiv = stepDiv;
+  const isFirst = $$("#steps .step").indexOf(stepDiv) === 0;
+  const firstSubject = $$("#steps .step")[0]?.querySelector(".subject").value || "";
+  const subject = stepDiv.querySelector(".subject").value || `Re: ${firstSubject}`;
+  const r = await api("/api/preview", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      subject,
+      body: stepDiv.querySelector(".body").value,
+      campaign_id: selectedId || undefined,
+      account_id: +$("#previewAccount").value || undefined,
+    }),
+  });
+  $("#previewBody").innerHTML = `
+    <div class="hline">De : ${esc(r.from)}</div>
+    <div class="hline">À : ${esc(r.to)}</div>
+    <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
+    <pre>${esc(r.body)}</pre>`;
+  $("#previewNote").textContent = r.sample_contact
+    ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
+    : "Aperçu avec le premier contact de la campagne.";
+  $("#previewCard").hidden = false;
+  $("#previewCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function rerunPreview() { if (previewStepDiv) previewStep(previewStepDiv); }
+
+// --- Contacts & import ---
+async function loadContacts() {
+  const rows = await api(`/api/campaigns/${selectedId}/contacts`);
+  $("#contacts tbody").innerHTML = rows.map(r => `
+    <tr>
+      <td>${esc(r.email)}</td>
+      <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
+      <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
+      <td>${r.current_step || "—"}</td>
+      <td>${r.variant || "—"}</td>
+      <td class="muted">${esc(r.sender || "—")}</td>
+      <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
+    </tr>
+  `).join("") || '<tr><td colspan="7" class="muted">Aucun contact — importez un CSV ou synchronisez Attio ci-dessus.</td></tr>';
+}
+
+async function importCsv() {
+  const file = $("#csvFile").files[0];
+  if (!file) { $("#csvMsg").textContent = "Choisissez un fichier"; return; }
+  try {
+    const r = await api(`/api/campaigns/${selectedId}/import`, { method: "POST", headers: {"Content-Type":"text/csv"}, body: await file.text() });
+    $("#csvMsg").textContent = `${r.imported} importé(s), ${r.skipped} ignoré(s)`;
+    loadContacts(); loadList();
+  } catch (e) { $("#csvMsg").textContent = e.message; }
+}
+
+async function attioSync() {
+  try {
+    const r = await api(`/api/campaigns/${selectedId}/attio-sync`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        status_attribute: $("#attioAttr").value,
+        statuses: $("#attioStatuses").value.split(",").map(s => s.trim()).filter(Boolean),
+      })});
+    $("#attioMsg").textContent = `${r.fetched} récupéré(s), ${r.imported} inscrit(s)`;
+    loadContacts(); loadList();
+  } catch (e) { $("#attioMsg").textContent = e.message; }
+}
+
+// --- Init ---
+(async function init() {
+  accounts = await api("/api/accounts");
+  $("#previewAccount").innerHTML = `<option value="">(1er compte actif)</option>` +
+    accounts.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join("");
+  const campaigns = await loadList();
+  const hash = location.hash.slice(1);
+  if (hash && hash !== "new" && campaigns.some(c => c.id === +hash)) {
+    selectCampaign(+hash);
+  } else if (hash !== "new" && campaigns.length) {
+    selectCampaign(campaigns[0].id);
+  } else {
+    newCampaign();
+  }
+})();
+</script>
+</body>
+</html>

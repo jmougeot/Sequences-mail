@@ -1,8 +1,10 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const DATA_DIR = path.resolve("data");
+// Relatif au projet (src/../data), pas au répertoire de lancement ; surchargeable via DATA_DIR
+const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url));
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 export const db = new Database(path.join(DATA_DIR, "sequence-mail.db"));

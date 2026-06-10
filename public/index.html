@@ -4,177 +4,56 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Tableau de bord</title>
-<style>
-  :root { --bg:#0f1419; --card:#1a2129; --border:#2c3640; --text:#e6edf3; --muted:#8b98a5; --accent:#4493f8; --ok:#3fb950; --warn:#d29922; --bad:#f85149; }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--text); }
-  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
-  h1 { font-size: 22px; } h2 { font-size: 16px; margin: 24px 0 8px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
-  table { width:100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); }
-  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; }
-  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; }
-  .pill.active { background:#1f3d2b; color:var(--ok); } .pill.paused { background:#3d331f; color:var(--warn); }
-  button, .btn { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:8px 14px; font-size:13px; cursor:pointer; text-decoration:none; display:inline-block; }
-  button.ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
-  input, textarea { width:100%; background:#0d1117; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:13px; margin:4px 0; font-family:inherit; }
-  textarea { min-height:80px; }
-  .row { display:flex; gap:16px; flex-wrap:wrap; } .row > div { flex:1; min-width:280px; }
-  .muted { color:var(--muted); font-size:12px; }
-  .bar { background:#0d1117; border-radius:4px; height:8px; overflow:hidden; }
-  .bar > div { background:var(--accent); height:100%; }
-  .step { border:1px dashed var(--border); border-radius:8px; padding:10px; margin:8px 0; }
-  .err { color: var(--bad); }
-</style>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="wrap">
-  <h1>📬 Sequence Mail</h1>
+  <h1>Tableau de bord</h1>
+
+  <div class="kpis" id="kpis"></div>
 
   <div class="card">
-    <h2 style="margin-top:0">Comptes d'envoi (Google Workspace)</h2>
-    <table id="accounts"><thead><tr><th>Email</th><th>Nom d'expéditeur</th><th>Signature</th><th>Envoyés aujourd'hui</th><th>Quota / jour</th><th>Actif</th></tr></thead><tbody></tbody></table>
-    <p><a class="btn" href="/auth/google">+ Connecter un compte Google</a></p>
-    <p class="muted">Le nom apparaît dans le champ « De » des emails du compte ; la signature (variables acceptées) est ajoutée à la fin de chaque email envoyé par ce compte.
-    Si un compte se décoche tout seul, son accès Google a été révoqué : cliquez « + Connecter un compte Google » avec la même adresse pour le réactiver.</p>
-  </div>
-
-  <div class="card">
-    <h2 style="margin-top:0">Campagnes</h2>
+    <h2>Comparaison des campagnes</h2>
     <table id="campaigns"><thead><tr>
-      <th>Nom</th><th>Statut</th><th>Contacts</th><th>Emails envoyés</th><th>Réponses</th><th>Taux de réponse</th><th>Progression</th><th></th>
+      <th>Campagne</th><th>Statut</th><th>Contacts</th><th>Emails envoyés</th><th>Réponses</th><th>Taux de réponse</th><th>Progression</th><th></th>
     </tr></thead><tbody></tbody></table>
-  </div>
-
-  <div class="row">
-    <div class="card">
-      <h2 style="margin-top:0">Nouvelle campagne</h2>
-      <input id="campName" placeholder="Nom de la campagne">
-      <div id="steps"></div>
-      <button class="ghost" onclick="addStep()">+ Ajouter une étape</button>
-      <p><button onclick="createCampaign()">Créer la campagne</button> <span id="campMsg" class="muted"></span></p>
-      <p class="muted">Variables disponibles : {{first_name}}, {{last_name}}, {{company}}, {{email}} + toute colonne CSV supplémentaire. Une relance sans sujet part dans le même fil (Re:).</p>
-    </div>
-
-    <div class="card">
-      <h2 style="margin-top:0">Importer des contacts (CSV)</h2>
-      <input id="csvCampaign" placeholder="ID de la campagne" type="number">
-      <input id="csvFile" type="file" accept=".csv">
-      <p class="muted">Colonnes attendues : email (obligatoire), first_name, last_name, company, …</p>
-      <p><button onclick="importCsv()">Importer</button> <span id="csvMsg" class="muted"></span></p>
-
-      <h2>Synchroniser depuis Attio</h2>
-      <input id="attioCampaign" placeholder="ID de la campagne" type="number">
-      <input id="attioAttr" placeholder="Slug de l'attribut statut (ex: stage)">
-      <input id="attioStatuses" placeholder="Statuts, séparés par des virgules (ex: Prospect,Lead)">
-      <p><button onclick="attioSync()">Synchroniser</button> <span id="attioMsg" class="muted"></span></p>
-    </div>
+    <p><a class="btn" href="campaigns.html#new">+ Nouvelle campagne</a></p>
   </div>
 </div>
 
+<script src="app.js"></script>
 <script>
-const $ = (s) => document.querySelector(s);
-
-async function api(url, opts) {
-  const res = await fetch(url, opts);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
-  return data;
-}
+renderNav("index.html");
 
 async function refresh() {
-  // Ne pas réécrire le tableau pendant une saisie (nom, signature, quota)
-  if (document.activeElement && $("#accounts").contains(document.activeElement)) return;
-  const accounts = await api("/api/accounts");
-  const esc = (s) => (s ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-  $("#accounts tbody").innerHTML = accounts.map(a => `
-    <tr><td>${a.email}</td>
-    <td><input value="${esc(a.from_name)}" placeholder="ex: Jacques M." style="width:130px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
-    <td><textarea style="min-height:40px; width:200px" placeholder="Cordialement,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
-    <td>${a.sent_today_date === new Date().toISOString().slice(0,10) ? a.sent_today : 0}</td>
-    <td><input type="number" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})"></td>
-    <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="updateAccount(${a.id}, {active: this.checked})"></td></tr>
-  `).join("") || '<tr><td colspan="6" class="muted">Aucun compte connecté</td></tr>';
+  const [accounts, campaigns] = await Promise.all([api("/api/accounts"), api("/api/campaigns")]);
+  const today = new Date().toISOString().slice(0, 10);
+  const sentToday = accounts.reduce((n, a) => n + (a.sent_today_date === today ? a.sent_today : 0), 0);
+  const quota = accounts.filter(a => a.active).reduce((n, a) => n + a.daily_limit, 0);
+  const inProgress = campaigns.reduce((n, c) => n + c.in_progress + c.pending, 0);
+  const replied = campaigns.reduce((n, c) => n + c.replied, 0);
 
-  const campaigns = await api("/api/campaigns");
+  $("#kpis").innerHTML = [
+    [accounts.filter(a => a.active).length + " / " + accounts.length, "comptes actifs"],
+    [sentToday + " / " + quota, "envoyés aujourd'hui"],
+    [inProgress, "contacts dans le workflow"],
+    [replied, "réponses obtenues"],
+  ].map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+
   $("#campaigns tbody").innerHTML = campaigns.map(c => `
     <tr>
-      <td><b>${c.name}</b> <span class="muted">#${c.id} · ${c.steps} étape(s)</span></td>
-      <td><span class="pill ${c.status}">${c.status === "active" ? "active" : "en pause"}</span></td>
+      <td><a href="campaigns.html#${c.id}" style="color:var(--text)"><b>${esc(c.name)}</b></a> <span class="muted">#${c.id} · ${c.steps} étape(s)</span></td>
+      <td>${pill(c.status)}</td>
       <td>${c.contacts}</td>
       <td>${c.emails_sent}</td>
       <td>${c.replied}${c.opted_out ? ` <span class="muted" title="désinscrits">(${c.opted_out} 🚫)</span>` : ""}</td>
       <td><b>${c.reply_rate}%</b>${c.ab_test ? `<div class="muted">A ${c.reply_rate_a}% · B ${c.reply_rate_b}%</div>` : ""}</td>
       <td style="min-width:120px"><div class="bar"><div style="width:${c.progress}%"></div></div><span class="muted">${c.progress}%</span></td>
-      <td><button class="ghost" onclick="toggleCampaign(${c.id}, '${c.status}')">${c.status === "active" ? "⏸" : "▶"}</button></td>
+      <td><a class="btn ghost" href="campaigns.html#${c.id}">Gérer</a></td>
     </tr>
-  `).join("") || '<tr><td colspan="8" class="muted">Aucune campagne</td></tr>';
+  `).join("") || '<tr><td colspan="8" class="muted">Aucune campagne — créez-en une depuis la page Campagnes.</td></tr>';
 }
 
-async function updateAccount(id, patch) {
-  await api(`/api/accounts/${id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(patch) });
-  refresh();
-}
-
-async function toggleCampaign(id, status) {
-  await api(`/api/campaigns/${id}/${status === "active" ? "pause" : "resume"}`, { method: "POST" });
-  refresh();
-}
-
-function addStep() {
-  const n = $("#steps").children.length + 1;
-  const div = document.createElement("div");
-  div.className = "step";
-  div.innerHTML = `<b>Étape ${n}</b>
-    ${n > 1 ? '<input class="wait" type="number" value="3" min="1" style="width:70px"> jours après l’étape précédente' : ""}
-    <input class="subject" placeholder="${n === 1 ? "Sujet A (obligatoire)" : "Sujet (vide = même fil, Re:)"}">
-    ${n === 1 ? '<input class="subjectB" placeholder="Sujet B (optionnel — A/B test 50/50)">' : ""}
-    <textarea class="body" placeholder="Bonjour {{first_name}},&#10;..."></textarea>`;
-  $("#steps").appendChild(div);
-}
-
-async function createCampaign() {
-  const steps = [...$("#steps").children].map(div => ({
-    subject: div.querySelector(".subject").value,
-    subject_b: div.querySelector(".subjectB")?.value || undefined,
-    body: div.querySelector(".body").value,
-    wait_days: +(div.querySelector(".wait")?.value ?? 0),
-  }));
-  try {
-    const { id } = await api("/api/campaigns", { method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({ name: $("#campName").value, steps }) });
-    $("#campMsg").textContent = `Campagne #${id} créée ✓`;
-    $("#campName").value = ""; $("#steps").innerHTML = ""; addStep();
-    refresh();
-  } catch (e) { $("#campMsg").textContent = e.message; $("#campMsg").className = "err"; }
-}
-
-async function importCsv() {
-  const file = $("#csvFile").files[0];
-  if (!file || !$("#csvCampaign").value) { $("#csvMsg").textContent = "Campagne + fichier requis"; return; }
-  try {
-    const r = await api(`/api/campaigns/${$("#csvCampaign").value}/import`, {
-      method: "POST", headers: {"Content-Type":"text/csv"}, body: await file.text() });
-    $("#csvMsg").textContent = `${r.imported} importé(s), ${r.skipped} ignoré(s)`;
-    refresh();
-  } catch (e) { $("#csvMsg").textContent = e.message; }
-}
-
-async function attioSync() {
-  try {
-    const r = await api(`/api/campaigns/${$("#attioCampaign").value}/attio-sync`, {
-      method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        status_attribute: $("#attioAttr").value,
-        statuses: $("#attioStatuses").value.split(",").map(s => s.trim()).filter(Boolean),
-      })});
-    $("#attioMsg").textContent = `${r.fetched} récupéré(s), ${r.imported} inscrit(s)`;
-    refresh();
-  } catch (e) { $("#attioMsg").textContent = e.message; }
-}
-
-addStep();
 refresh();
 setInterval(refresh, 30000);
 </script>
