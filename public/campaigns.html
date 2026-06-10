@@ -68,6 +68,7 @@
 
       <div class="card" id="contactsCard" hidden>
         <h2>Contacts</h2>
+        <p class="muted" style="margin-top:0">👁 Cliquez sur un contact pour voir l'aperçu de son prochain email, personnalisé avec ses données.</p>
         <table id="contacts"><thead><tr>
           <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
         </tr></thead><tbody></tbody></table>
@@ -82,7 +83,7 @@ renderNav("campaigns.html");
 
 let selectedId = null;   // null = création
 let accounts = [];
-let previewStepDiv = null;
+let contactRows = [];
 
 async function loadList() {
   const campaigns = await api("/api/campaigns");
@@ -190,18 +191,39 @@ async function saveCampaign() {
 }
 
 // --- Aperçu ---
-async function previewStep(stepDiv) {
-  previewStepDiv = stepDiv;
-  const isFirst = $$("#steps .step").indexOf(stepDiv) === 0;
-  const firstSubject = $$("#steps .step")[0]?.querySelector(".subject").value || "";
-  const subject = stepDiv.querySelector(".subject").value || `Re: ${firstSubject}`;
+// Deux entrées : 👁 sur une étape (contact par défaut) ou clic sur un contact
+// (l'email exact que CE prospect recevra à sa prochaine étape).
+async function runPreview({ stepDiv, contact }) {
+  const steps = $$("#steps .step");
+  if (!steps.length) return;
+  let div = stepDiv, note = "";
+
+  if (contact) {
+    const total = steps.length;
+    const idx = Math.min(contact.current_step, total - 1); // prochaine étape (index 0 = étape 1)
+    div = steps[idx];
+    note = contact.current_step >= total
+      ? `${contact.email} a déjà reçu toute la séquence — aperçu de la dernière étape (${total}/${total}).`
+      : `Aperçu pour ${contact.email} — prochaine étape : ${idx + 1}/${total}${contact.variant ? ` (variante ${contact.variant})` : ""}.`;
+  }
+  if (!div) return;
+
+  // Sujet : étape 1 = A ou B selon la variante du contact ; relance sans sujet = Re: sujet reçu
+  const first = steps[0];
+  const subjA = first.querySelector(".subject").value || "";
+  const subjB = first.querySelector(".subjectB")?.value || "";
+  const firstSubject = contact?.variant === "B" && subjB ? subjB : subjA;
+  const ownSubject = div.querySelector(".subject")?.value || "";
+  const subject = div === first ? firstSubject : (ownSubject || `Re: ${firstSubject}`);
+
   const r = await api("/api/preview", {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({
       subject,
-      body: stepDiv.querySelector(".body").value,
+      body: div.querySelector(".body").value,
       campaign_id: selectedId || undefined,
-      account_id: +$("#previewAccount").value || undefined,
+      contact_id: contact?.contact_id,
+      account_id: contact?.account_id || +$("#previewAccount").value || undefined,
     }),
   });
   $("#previewBody").innerHTML = `
@@ -209,21 +231,28 @@ async function previewStep(stepDiv) {
     <div class="hline">À : ${esc(r.to)}</div>
     <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
     <pre>${esc(r.body)}</pre>`;
-  $("#previewNote").textContent = r.sample_contact
+  $("#previewNote").textContent = note || (r.sample_contact
     ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
-    : "Aperçu avec le premier contact de la campagne.";
+    : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.");
   $("#previewCard").hidden = false;
   $("#previewCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-function rerunPreview() { if (previewStepDiv) previewStep(previewStepDiv); }
+let lastPreview = null;
+function previewStep(stepDiv) { lastPreview = { stepDiv }; runPreview(lastPreview); }
+function previewContact(contactId) {
+  const contact = contactRows.find(r => r.contact_id === contactId);
+  if (contact) { lastPreview = { contact }; runPreview(lastPreview); }
+}
+function rerunPreview() { if (lastPreview) runPreview(lastPreview); }
 
 // --- Contacts & import ---
 async function loadContacts() {
   const rows = await api(`/api/campaigns/${selectedId}/contacts`);
+  contactRows = rows;
   $("#contacts tbody").innerHTML = rows.map(r => `
-    <tr>
-      <td>${esc(r.email)}</td>
+    <tr style="cursor:pointer" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
+      <td>👁 ${esc(r.email)}</td>
       <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
       <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>

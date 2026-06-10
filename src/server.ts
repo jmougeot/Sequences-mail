@@ -182,13 +182,18 @@ export function createServer(): express.Express {
   // Aperçu d'un email : rendu des variables avec un vrai contact de la campagne
   // (le premier) ou un contact d'exemple, signature du compte incluse.
   app.post("/api/preview", (req, res) => {
-    const { subject, body, account_id, campaign_id } = req.body as {
+    const { subject, body, account_id, campaign_id, contact_id } = req.body as {
       subject?: string;
       body?: string;
       account_id?: number;
       campaign_id?: number;
+      contact_id?: number;
     };
-    const contact = (campaign_id
+    const contact = (contact_id
+      ? db
+          .prepare("SELECT email, first_name, last_name, company, extra FROM contacts WHERE id = ?")
+          .get(contact_id)
+      : campaign_id
       ? db
           .prepare(
             `SELECT c.email, c.first_name, c.last_name, c.company, c.extra
@@ -282,7 +287,8 @@ export function createServer(): express.Express {
   app.get("/api/campaigns/:id/contacts", (req, res) => {
     const rows = db
       .prepare(
-        `SELECT c.email, c.first_name, c.last_name, cc.status, cc.current_step, cc.variant,
+        `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name,
+                cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
