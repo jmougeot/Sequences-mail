@@ -2,7 +2,40 @@ import { config } from "../config.js";
 import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
-import { sendEmail, threadHasReply, type AccountRow } from "./google.js";
+import { getThreadReply, sendEmail, type AccountRow } from "./google.js";
+
+const OPT_OUT_PATTERNS = [
+  "pas interesse",
+  "pas du tout interesse",
+  "ne plus me contacter",
+  "ne me contactez plus",
+  "ne plus etre contacte",
+  "ne plus recevoir",
+  "ne m envoyez plus",
+  "retirez moi",
+  "me retirer de",
+  "desinscri",
+  "desabonn",
+  "arretez de m",
+  "unsubscribe",
+  "not interested",
+  "no longer interested",
+  "remove me",
+  "stop emailing",
+  "stop contacting",
+  "opt out",
+];
+
+/** Détecte un refus / une demande de désinscription dans le texte d'une réponse. */
+export function isOptOut(text: string): boolean {
+  const normalized = text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // retire les accents (decomposes par NFD)
+    .replace(/['’-]/g, " ")
+    .replace(/\s+/g, " ");
+  return OPT_OUT_PATTERNS.some((p) => normalized.includes(p));
+}
 
 /** Pousse l'avancement vers Attio sans bloquer le workflow en cas d'erreur. */
 function syncAttio(attioRecordId: string | null, value: string): void {
@@ -46,11 +79,13 @@ interface DueRow {
   company: string | null;
   extra: string | null;
   attio_record_id: string | null;
+  variant: string | null;
 }
 
 interface StepRow {
   step_number: number;
   subject: string;
+  subject_b: string | null;
   body: string;
   wait_days: number;
 }
@@ -91,7 +126,7 @@ function scheduleNext(ccId: number, nextStep: StepRow): void {
 
 async function processOne(row: DueRow): Promise<void> {
   const steps = db
-    .prepare("SELECT step_number, subject, body, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number")
+    .prepare("SELECT step_number, subject, subject_b, body, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number")
     .all(row.campaign_id) as StepRow[];
   const step = steps.find((s) => s.step_number === row.current_step + 1);
   if (!step) {
@@ -115,12 +150,17 @@ async function processOne(row: DueRow): Promise<void> {
   };
   const senderVars = { sender_name: account.from_name ?? account.email };
   const isFollowUp = row.current_step > 0 && !!row.thread_id;
-  const firstSubject = db
-    .prepare("SELECT subject FROM steps WHERE campaign_id = ? AND step_number = 1")
-    .get(row.campaign_id) as { subject: string } | undefined;
+
+  // A/B test : si l'étape 1 a un sujet B, chaque contact reçoit une variante (50/50),
+  // figée au 1er envoi (les relances "Re:" reprennent le sujet réellement reçu).
+  const firstStep = steps.find((s) => s.step_number === 1);
+  const variant = row.variant ?? (firstStep?.subject_b && Math.random() < 0.5 ? "B" : "A");
+  const subjectFor = (s: StepRow | undefined) =>
+    s ? (variant === "B" && s.subject_b ? s.subject_b : s.subject) : "";
+
   const subject = isFollowUp && !step.subject
-    ? `Re: ${renderTemplate(firstSubject?.subject ?? "", contact, senderVars)}`
-    : renderTemplate(step.subject, contact, senderVars);
+    ? `Re: ${renderTemplate(subjectFor(firstStep), contact, senderVars)}`
+    : renderTemplate(subjectFor(step), contact, senderVars);
 
   let body = renderTemplate(step.body, contact, senderVars);
   if (account.signature) {
@@ -144,8 +184,8 @@ async function processOne(row: DueRow): Promise<void> {
       ).run(today(), now, now + gap, account.id);
       db.prepare(
         `UPDATE campaign_contacts SET current_step = ?, account_id = ?, thread_id = ?,
-         last_gmail_message_id = ?, error = NULL WHERE id = ?`
-      ).run(step.step_number, account.id, result.threadId, result.rfc822MessageId, row.cc_id);
+         last_gmail_message_id = ?, variant = ?, error = NULL WHERE id = ?`
+      ).run(step.step_number, account.id, result.threadId, result.rfc822MessageId, variant, row.cc_id);
       db.prepare(
         `INSERT INTO messages (campaign_contact_id, account_id, step_number, gmail_message_id, gmail_thread_id)
          VALUES (?, ?, ?, ?, ?)`
@@ -192,12 +232,13 @@ export async function sendTick(): Promise<void> {
   const due = db
     .prepare(
       `SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
-              cc.account_id, cc.thread_id, cc.last_gmail_message_id,
+              cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
               c.email, c.first_name, c.last_name, c.company, c.extra, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        JOIN campaigns cp ON cp.id = cc.campaign_id
        WHERE cp.status = 'active'
+         AND c.do_not_contact = 0
          AND cc.status IN ('pending', 'in_progress')
          AND (cc.next_send_at IS NULL OR cc.next_send_at <= ?)
        ORDER BY COALESCE(cc.next_send_at, 0) ASC
@@ -212,11 +253,16 @@ export async function sendTick(): Promise<void> {
   }
 }
 
-/** Vérifie les fils en cours : toute réponse retire le contact du workflow. */
+/**
+ * Vérifie les fils en cours : toute réponse retire le contact du workflow.
+ * Une réponse de type "pas intéressé / désinscription" passe en outre le contact
+ * sur la liste do_not_contact (exclu de toutes les campagnes, actuelles et futures).
+ */
 export async function checkRepliesTick(): Promise<void> {
   const rows = db
     .prepare(
-      `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id, c.email, c.attio_record_id
+      `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id,
+              c.id AS contact_id, c.email, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        WHERE cc.status IN ('in_progress', 'completed')
@@ -228,6 +274,7 @@ export async function checkRepliesTick(): Promise<void> {
       cc_id: number;
       thread_id: string;
       account_id: number;
+      contact_id: number;
       email: string;
       attio_record_id: string | null;
     }>;
@@ -236,12 +283,26 @@ export async function checkRepliesTick(): Promise<void> {
     const account = accountById(row.account_id);
     if (!account) continue;
     try {
-      if (await threadHasReply(account, row.thread_id)) {
-        db.prepare(
-          "UPDATE campaign_contacts SET status = 'replied', replied_at = ?, next_send_at = NULL WHERE id = ?"
-        ).run(Date.now(), row.cc_id);
-        syncAttio(row.attio_record_id, "A répondu ✅");
-        console.log(`[réponse] ${row.email} a répondu — retiré du workflow`);
+      const replyText = await getThreadReply(account, row.thread_id);
+      if (replyText !== null) {
+        const optedOut = isOptOut(replyText);
+        db.transaction(() => {
+          db.prepare(
+            "UPDATE campaign_contacts SET status = ?, replied_at = ?, next_send_at = NULL WHERE id = ?"
+          ).run(optedOut ? "opted_out" : "replied", Date.now(), row.cc_id);
+          if (optedOut) {
+            db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(row.contact_id);
+            // Stoppe aussi ses séquences dans les autres campagnes
+            db.prepare(
+              `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
+               WHERE contact_id = ? AND status IN ('pending', 'in_progress')`
+            ).run(row.contact_id);
+          }
+        })();
+        syncAttio(row.attio_record_id, optedOut ? "Pas intéressé / désinscrit 🚫" : "A répondu ✅");
+        console.log(
+          `[réponse] ${row.email} ${optedOut ? "s'est désinscrit (do_not_contact)" : "a répondu"} — retiré du workflow`
+        );
       }
     } catch (err) {
       console.error(`[réponse] vérification impossible pour ${row.email} :`, err instanceof Error ? err.message : err);

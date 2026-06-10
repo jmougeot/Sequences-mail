@@ -27,8 +27,9 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 
 ### Campagnes et séquences
 - Chaque campagne est indépendante et contient une séquence d'étapes (email initial + relances avec délai en jours).
-- Les corps et sujets acceptent des variables : `{{first_name}}`, `{{last_name}}`, `{{company}}`, `{{email}}` et toute colonne supplémentaire du CSV.
+- Les corps et sujets acceptent des variables : `{{first_name}}`, `{{last_name}}`, `{{company}}`, `{{email}}`, `{{sender_name}}` et toute colonne supplémentaire du CSV.
 - Une relance **sans sujet** part dans le même fil Gmail (`Re:`, en-têtes `In-Reply-To`/`References`), ce qui améliore la délivrabilité et le taux de réponse.
+- **A/B test** : l'étape 1 peut avoir un « Sujet B ». Chaque contact reçoit alors aléatoirement (50/50) la variante A ou B, conservée pour toute sa séquence, et le tableau de bord affiche le taux de réponse de chaque variante.
 
 ### Import des contacts
 - **CSV** : colonnes `email` (obligatoire), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Les doublons (même email déjà inscrit à la campagne) sont ignorés.
@@ -37,6 +38,7 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 ### Gestion des réponses
 - Le système interroge les boîtes connectées toutes les ~4–7 minutes.
 - Dès qu'un contact répond (n'importe quel message du fil qui ne vient pas du compte émetteur), il passe au statut `replied` et est **retiré du workflow** : plus aucune relance ne lui sera envoyée, même après l'envoi de la dernière étape.
+- **Détection des refus** : si la réponse contient une demande de désinscription ou un refus (« pas intéressé », « ne plus me contacter », « unsubscribe », etc.), le contact passe en `opted_out`, est ajouté à la liste globale `do_not_contact` (exclu de toutes les campagnes actuelles et futures, y compris lors d'imports ultérieurs) et sa fiche Attio est taguée « Pas intéressé / désinscrit 🚫 ».
 
 ### Répartition entre comptes
 - Le premier email d'un contact part du compte **le moins chargé** du jour (équilibrage automatique).

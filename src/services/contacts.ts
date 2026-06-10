@@ -27,7 +27,7 @@ export function importContacts(
       extra      = COALESCE(excluded.extra, contacts.extra),
       attio_record_id = COALESCE(excluded.attio_record_id, contacts.attio_record_id)
   `);
-  const getContactId = db.prepare("SELECT id FROM contacts WHERE email = ?");
+  const getContactId = db.prepare("SELECT id, do_not_contact FROM contacts WHERE email = ?");
   const enroll = db.prepare(`
     INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
     VALUES (?, ?, 'pending')
@@ -53,7 +53,14 @@ export function importContacts(
         extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
         attio_record_id: source.attioRecordIds?.[email] ?? null,
       });
-      const { id } = getContactId.get(email) as { id: number };
+      const { id, do_not_contact } = getContactId.get(email) as {
+        id: number;
+        do_not_contact: number;
+      };
+      if (do_not_contact) {
+        report.skipped++; // désinscrit : ne jamais le réinscrire
+        continue;
+      }
       const r = enroll.run(campaignId, id);
       if (r.changes > 0) report.imported++;
       else report.skipped++; // déjà inscrit à cette campagne

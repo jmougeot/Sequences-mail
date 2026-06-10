@@ -148,20 +148,40 @@ export async function sendEmail(
   };
 }
 
-/** Vérifie si quelqu'un d'autre que le compte a écrit dans le fil. */
-export async function threadHasReply(account: AccountRow, threadId: string): Promise<boolean> {
+interface GmailPart {
+  mimeType?: string | null;
+  body?: { data?: string | null } | null;
+  parts?: GmailPart[] | null;
+}
+
+function extractPlainText(part: GmailPart | undefined | null): string {
+  if (!part) return "";
+  if (part.mimeType === "text/plain" && part.body?.data) {
+    return Buffer.from(part.body.data, "base64url").toString("utf8");
+  }
+  for (const p of part.parts ?? []) {
+    const text = extractPlainText(p);
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
+ * Retourne le texte de la première réponse du fil (message ne venant pas du compte),
+ * ou null si personne n'a répondu.
+ */
+export async function getThreadReply(account: AccountRow, threadId: string): Promise<string | null> {
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
   const { data } = await gmail.users.threads.get({
     userId: "me",
     id: threadId,
-    format: "metadata",
-    metadataHeaders: ["From"],
+    format: "full",
   });
   for (const msg of data.messages ?? []) {
     const from = msg.payload?.headers?.find((h) => h.name?.toLowerCase() === "from")?.value ?? "";
     if (from && !from.toLowerCase().includes(account.email.toLowerCase())) {
-      return true;
+      return extractPlainText(msg.payload as GmailPart) || msg.snippet || "";
     }
   }
-  return false;
+  return null;
 }

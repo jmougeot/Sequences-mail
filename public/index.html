@@ -103,8 +103,8 @@ async function refresh() {
       <td><span class="pill ${c.status}">${c.status === "active" ? "active" : "en pause"}</span></td>
       <td>${c.contacts}</td>
       <td>${c.emails_sent}</td>
-      <td>${c.replied}</td>
-      <td><b>${c.reply_rate}%</b></td>
+      <td>${c.replied}${c.opted_out ? ` <span class="muted" title="désinscrits">(${c.opted_out} 🚫)</span>` : ""}</td>
+      <td><b>${c.reply_rate}%</b>${c.ab_test ? `<div class="muted">A ${c.reply_rate_a}% · B ${c.reply_rate_b}%</div>` : ""}</td>
       <td style="min-width:120px"><div class="bar"><div style="width:${c.progress}%"></div></div><span class="muted">${c.progress}%</span></td>
       <td><button class="ghost" onclick="toggleCampaign(${c.id}, '${c.status}')">${c.status === "active" ? "⏸" : "▶"}</button></td>
     </tr>
@@ -127,7 +127,8 @@ function addStep() {
   div.className = "step";
   div.innerHTML = `<b>Étape ${n}</b>
     ${n > 1 ? '<input class="wait" type="number" value="3" min="1" style="width:70px"> jours après l\\'étape précédente' : ""}
-    <input class="subject" placeholder="${n === 1 ? "Sujet (obligatoire)" : "Sujet (vide = même fil, Re:)"}">
+    <input class="subject" placeholder="${n === 1 ? "Sujet A (obligatoire)" : "Sujet (vide = même fil, Re:)"}">
+    ${n === 1 ? '<input class="subjectB" placeholder="Sujet B (optionnel — A/B test 50/50)">' : ""}
     <textarea class="body" placeholder="Bonjour {{first_name}},&#10;..."></textarea>`;
   $("#steps").appendChild(div);
 }
@@ -135,6 +136,7 @@ function addStep() {
 async function createCampaign() {
   const steps = [...$("#steps").children].map(div => ({
     subject: div.querySelector(".subject").value,
+    subject_b: div.querySelector(".subjectB")?.value || undefined,
     body: div.querySelector(".body").value,
     wait_days: +(div.querySelector(".wait")?.value ?? 0),
   }));

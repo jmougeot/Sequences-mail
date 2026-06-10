@@ -58,7 +58,7 @@ export function createServer(): express.Express {
   app.post("/api/campaigns", (req, res) => {
     const { name, steps } = req.body as {
       name: string;
-      steps: Array<{ subject?: string; body: string; wait_days?: number }>;
+      steps: Array<{ subject?: string; subject_b?: string; body: string; wait_days?: number }>;
     };
     if (!name || !steps?.length) {
       return res.status(400).json({ error: "name et steps[] sont requis" });
@@ -69,10 +69,17 @@ export function createServer(): express.Express {
     const result = db.transaction(() => {
       const { lastInsertRowid } = db.prepare("INSERT INTO campaigns (name) VALUES (?)").run(name);
       const insert = db.prepare(
-        "INSERT INTO steps (campaign_id, step_number, subject, body, wait_days) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days) VALUES (?, ?, ?, ?, ?, ?)"
       );
       steps.forEach((s, i) =>
-        insert.run(lastInsertRowid, i + 1, s.subject ?? "", s.body, i === 0 ? 0 : (s.wait_days ?? 3))
+        insert.run(
+          lastInsertRowid,
+          i + 1,
+          s.subject ?? "",
+          i === 0 ? s.subject_b?.trim() || null : null, // A/B test : étape 1 uniquement
+          s.body,
+          i === 0 ? 0 : (s.wait_days ?? 3)
+        )
       );
       return lastInsertRowid;
     })();
@@ -88,21 +95,33 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'pending') AS pending,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'in_progress') AS in_progress,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'replied') AS replied,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'opted_out') AS opted_out,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'completed') AS completed,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'failed') AS failed,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
-              WHERE cc.campaign_id = cp.id) AS emails_sent
+              WHERE cc.campaign_id = cp.id) AS emails_sent,
+           (SELECT s.subject_b FROM steps s WHERE s.campaign_id = cp.id AND s.step_number = 1) AS subject_b,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'A' AND cc.current_step > 0) AS contacted_a,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'A' AND cc.status = 'replied') AS replied_a,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'B' AND cc.current_step > 0) AS contacted_b,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'B' AND cc.status = 'replied') AS replied_b
          FROM campaigns cp ORDER BY cp.created_at DESC`
       )
-      .all() as Array<Record<string, number | string>>;
+      .all() as Array<Record<string, number | string | null>>;
+
+    const rate = (replied: number, contacted: number) =>
+      contacted > 0 ? Math.round((replied / contacted) * 1000) / 10 : 0;
 
     for (const c of campaigns) {
       const contacted = Number(c.contacts) - Number(c.pending);
-      c.reply_rate = contacted > 0 ? Math.round((Number(c.replied) / contacted) * 1000) / 10 : 0;
+      c.reply_rate = rate(Number(c.replied), contacted);
       c.progress =
         Number(c.contacts) > 0
           ? Math.round(((Number(c.contacts) - Number(c.pending) - Number(c.in_progress)) / Number(c.contacts)) * 100)
           : 0;
+      c.ab_test = c.subject_b ? 1 : 0;
+      c.reply_rate_a = rate(Number(c.replied_a), Number(c.contacted_a));
+      c.reply_rate_b = rate(Number(c.replied_b), Number(c.contacted_b));
     }
     res.json(campaigns);
   });
@@ -153,7 +172,7 @@ export function createServer(): express.Express {
   app.get("/api/campaigns/:id/contacts", (req, res) => {
     const rows = db
       .prepare(
-        `SELECT c.email, c.first_name, c.last_name, cc.status, cc.current_step,
+        `SELECT c.email, c.first_name, c.last_name, cc.status, cc.current_step, cc.variant,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id

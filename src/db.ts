@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS steps (
   campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   step_number INTEGER NOT NULL,          -- 1, 2, 3...
   subject TEXT NOT NULL,                 -- vide pour les relances => même fil (Re:)
+  subject_b TEXT,                        -- variante B du sujet (A/B test, étape 1 uniquement)
   body TEXT NOT NULL,                    -- texte avec variables {{first_name}} etc.
   wait_days INTEGER NOT NULL DEFAULT 0,  -- délai après l'étape précédente
   UNIQUE (campaign_id, step_number)
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   company TEXT,
   extra TEXT,                            -- JSON : colonnes CSV supplémentaires
   attio_record_id TEXT,
+  do_not_contact INTEGER NOT NULL DEFAULT 0, -- désinscrit : exclu de toutes les campagnes
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -55,8 +57,9 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | replied | completed | stopped | failed
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | replied | opted_out | completed | stopped | failed
   current_step INTEGER NOT NULL DEFAULT 0, -- dernière étape envoyée (0 = aucune)
+  variant TEXT,                            -- 'A' ou 'B' si A/B test sur le sujet de l'étape 1
   next_send_at INTEGER,                    -- epoch ms du prochain envoi prévu
   account_id INTEGER REFERENCES accounts(id), -- compte assigné au 1er envoi, fixe ensuite (continuité du fil)
   thread_id TEXT,                          -- thread Gmail
@@ -82,8 +85,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_cc ON messages (campaign_contact_id);
 `);
 
 // Migrations additives sur les bases existantes
-const accountCols = (db.prepare("PRAGMA table_info(accounts)").all() as Array<{ name: string }>).map(
-  (c) => c.name
-);
-if (!accountCols.includes("from_name")) db.exec("ALTER TABLE accounts ADD COLUMN from_name TEXT");
-if (!accountCols.includes("signature")) db.exec("ALTER TABLE accounts ADD COLUMN signature TEXT");
+function addColumnIfMissing(table: string, column: string, ddl: string): void {
+  const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+    (c) => c.name
+  );
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+addColumnIfMissing("accounts", "from_name", "from_name TEXT");
+addColumnIfMissing("accounts", "signature", "signature TEXT");
+addColumnIfMissing("contacts", "do_not_contact", "do_not_contact INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("steps", "subject_b", "subject_b TEXT");
+addColumnIfMissing("campaign_contacts", "variant", "variant TEXT");
