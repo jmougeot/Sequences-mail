@@ -1,0 +1,158 @@
+import express from "express";
+import path from "node:path";
+import { db } from "./db.js";
+import { authUrl, handleOAuthCallback } from "./services/google.js";
+import { importContacts, parseCsv } from "./services/contacts.js";
+import { syncFromAttio } from "./services/attio.js";
+
+export function createServer(): express.Express {
+  const app = express();
+  app.use(express.json({ limit: "10mb" }));
+  app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
+  app.use(express.static(path.resolve("public")));
+
+  // --- Comptes Google ---
+  app.get("/auth/google", (_req, res) => res.redirect(authUrl()));
+
+  app.get("/auth/google/callback", async (req, res) => {
+    try {
+      const email = await handleOAuthCallback(String(req.query.code ?? ""));
+      res.redirect(`/?connected=${encodeURIComponent(email)}`);
+    } catch (err) {
+      res.status(500).send(`Erreur OAuth : ${err instanceof Error ? err.message : err}`);
+    }
+  });
+
+  app.get("/api/accounts", (_req, res) => {
+    const rows = db
+      .prepare(
+        "SELECT id, email, daily_limit, sent_today, sent_today_date, active FROM accounts ORDER BY email"
+      )
+      .all();
+    res.json(rows);
+  });
+
+  app.patch("/api/accounts/:id", (req, res) => {
+    const { daily_limit, active } = req.body as { daily_limit?: number; active?: boolean };
+    if (daily_limit !== undefined) {
+      db.prepare("UPDATE accounts SET daily_limit = ? WHERE id = ?").run(daily_limit, req.params.id);
+    }
+    if (active !== undefined) {
+      db.prepare("UPDATE accounts SET active = ? WHERE id = ?").run(active ? 1 : 0, req.params.id);
+    }
+    res.json({ ok: true });
+  });
+
+  // --- Campagnes ---
+  app.post("/api/campaigns", (req, res) => {
+    const { name, steps } = req.body as {
+      name: string;
+      steps: Array<{ subject?: string; body: string; wait_days?: number }>;
+    };
+    if (!name || !steps?.length) {
+      return res.status(400).json({ error: "name et steps[] sont requis" });
+    }
+    if (!steps[0].subject) {
+      return res.status(400).json({ error: "La première étape doit avoir un sujet" });
+    }
+    const result = db.transaction(() => {
+      const { lastInsertRowid } = db.prepare("INSERT INTO campaigns (name) VALUES (?)").run(name);
+      const insert = db.prepare(
+        "INSERT INTO steps (campaign_id, step_number, subject, body, wait_days) VALUES (?, ?, ?, ?, ?)"
+      );
+      steps.forEach((s, i) =>
+        insert.run(lastInsertRowid, i + 1, s.subject ?? "", s.body, i === 0 ? 0 : (s.wait_days ?? 3))
+      );
+      return lastInsertRowid;
+    })();
+    res.json({ id: result });
+  });
+
+  app.get("/api/campaigns", (_req, res) => {
+    const campaigns = db
+      .prepare(
+        `SELECT cp.id, cp.name, cp.status, cp.created_at,
+           (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id) AS steps,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id) AS contacts,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'pending') AS pending,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'in_progress') AS in_progress,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'replied') AS replied,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'completed') AS completed,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'failed') AS failed,
+           (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
+              WHERE cc.campaign_id = cp.id) AS emails_sent
+         FROM campaigns cp ORDER BY cp.created_at DESC`
+      )
+      .all() as Array<Record<string, number | string>>;
+
+    for (const c of campaigns) {
+      const contacted = Number(c.contacts) - Number(c.pending);
+      c.reply_rate = contacted > 0 ? Math.round((Number(c.replied) / contacted) * 1000) / 10 : 0;
+      c.progress =
+        Number(c.contacts) > 0
+          ? Math.round(((Number(c.contacts) - Number(c.pending) - Number(c.in_progress)) / Number(c.contacts)) * 100)
+          : 0;
+    }
+    res.json(campaigns);
+  });
+
+  app.post("/api/campaigns/:id/pause", (req, res) => {
+    db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  app.post("/api/campaigns/:id/resume", (req, res) => {
+    db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // --- Import CSV (body = contenu CSV brut) ---
+  app.post("/api/campaigns/:id/import", (req, res) => {
+    const campaign = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    try {
+      const rows = parseCsv(String(req.body ?? ""));
+      if (!rows.length) return res.status(400).json({ error: "CSV vide ou illisible" });
+      if (!("email" in rows[0])) {
+        return res.status(400).json({ error: "Le CSV doit contenir une colonne 'email'" });
+      }
+      res.json(importContacts(Number(req.params.id), rows));
+    } catch (err) {
+      res.status(400).json({ error: `CSV invalide : ${err instanceof Error ? err.message : err}` });
+    }
+  });
+
+  // --- Synchronisation Attio (bonus) ---
+  app.post("/api/campaigns/:id/attio-sync", async (req, res) => {
+    const { status_attribute, statuses } = req.body as {
+      status_attribute?: string;
+      statuses?: string[];
+    };
+    if (!status_attribute || !statuses?.length) {
+      return res.status(400).json({ error: "status_attribute et statuses[] sont requis" });
+    }
+    try {
+      res.json(await syncFromAttio(Number(req.params.id), status_attribute, statuses));
+    } catch (err) {
+      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // --- Détail contacts d'une campagne ---
+  app.get("/api/campaigns/:id/contacts", (req, res) => {
+    const rows = db
+      .prepare(
+        `SELECT c.email, c.first_name, c.last_name, cc.status, cc.current_step,
+                cc.next_send_at, cc.replied_at, cc.error, a.email AS sender
+         FROM campaign_contacts cc
+         JOIN contacts c ON c.id = cc.contact_id
+         LEFT JOIN accounts a ON a.id = cc.account_id
+         WHERE cc.campaign_id = ?
+         ORDER BY cc.id`
+      )
+      .all(req.params.id);
+    res.json(rows);
+  });
+
+  return app;
+}
