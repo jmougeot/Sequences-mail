@@ -28,34 +28,34 @@
 
       <!-- Onglet Séquence -->
       <div id="paneSeq">
-        <div class="card" id="editorCard">
-          <div class="inline" style="justify-content:space-between">
-            <h2 id="editorTitle" style="margin:0">Nouvelle campagne</h2>
-            <span id="statusZone"></span>
-          </div>
-          <input id="campName" placeholder="Nom de la campagne">
-          <div id="steps"></div>
-          <p>
-            <button class="ghost" onclick="addStep()">+ Ajouter une étape</button>
-            <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
-            <span id="campMsg"></span>
-          </p>
-          <p class="muted">Variables : tapez <b>{{</b> pour voir les choix disponibles ({{first_name}}, {{company}}… + toute colonne CSV). Mise en forme : *texte* = <em>italique</em>.
-          Une relance sans sujet part dans le même fil (Re:). Placez {{signature}} là où la signature du compte d'envoi doit apparaître (sans elle, pas de signature).<br>
-          Modifier une campagne en cours est possible : les contacts gardent leur avancement, les prochains envois utilisent le nouveau contenu.</p>
-        </div>
-
-        <div class="card" id="previewCard" hidden>
-          <div class="inline" style="justify-content:space-between">
-            <h2 style="margin:0">Aperçu</h2>
-            <div class="inline">
-              <span class="muted">Compte :</span>
-              <select id="previewAccount" style="width:auto" onchange="rerunPreview()"></select>
-              <button class="ghost" onclick="$('#previewCard').hidden = true">Fermer</button>
+        <div class="row" style="align-items:flex-start;gap:16px">
+          <div style="flex:1;min-width:0">
+            <div class="card" id="editorCard">
+              <div class="inline" style="justify-content:space-between">
+                <h2 id="editorTitle" style="margin:0">Nouvelle campagne</h2>
+                <span id="statusZone"></span>
+              </div>
+              <input id="campName" placeholder="Nom de la campagne">
+              <div id="steps"></div>
+              <p>
+                <button class="ghost" onclick="addStep()">+ Ajouter une étape</button>
+                <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
+                <span id="campMsg"></span>
+              </p>
             </div>
           </div>
-          <div class="preview" id="previewBody" style="margin-top:10px"></div>
-          <p class="muted" id="previewNote"></p>
+          <div class="card" id="previewCard" hidden style="flex:0 0 380px;position:sticky;top:24px;align-self:flex-start">
+            <div class="inline" style="justify-content:space-between">
+              <h2 style="margin:0">Aperçu</h2>
+              <div class="inline">
+                <span class="muted">Compte :</span>
+                <select id="previewAccount" style="width:auto" onchange="rerunPreview()"></select>
+                <button class="ghost" onclick="$('#previewCard').hidden = true">Fermer</button>
+              </div>
+            </div>
+            <div class="preview" id="previewBody" style="margin-top:10px"></div>
+            <p class="muted" id="previewNote"></p>
+          </div>
         </div>
       </div>
 
@@ -84,7 +84,7 @@
                   <select id="statusSet" style="width:auto;margin:0" disabled onchange="setStatusSelected(this)">
                     <option value="">Changer le statut…</option>
                   </select>
-                  <button id="removeBtn" class="danger" onclick="removeSelected()" disabled>🗑 Retirer de la campagne</button>
+                  <button id="removeBtn" class="danger" onclick="removeSelected()" disabled>Retirer</button>
                 </div>
               </div>
               <div class="inline" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
@@ -97,7 +97,7 @@
               </tr></thead><tbody></tbody></table>
             </div>
           </div>
-          <div id="contactPreviewPanel" hidden style="flex:0 0 380px">
+          <div id="contactPreviewPanel" hidden style="flex:0 0 380px;position:sticky;top:24px;align-self:flex-start">
             <div class="card">
               <div class="inline" style="justify-content:space-between;margin-bottom:10px">
                 <h2 style="margin:0" id="contactPreviewTitle">Aperçu</h2>
@@ -383,7 +383,6 @@ async function runPreview({ stepDiv, contact }) {
     ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
     : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.");
   $("#previewCard").hidden = false;
-  $("#previewCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 let lastPreview = null;
@@ -420,7 +419,7 @@ function renderContactFields(contact) {
       <input id="newFieldValue" placeholder="valeur" style="margin:0">
     </div>
     <button class="ghost" onclick="saveContactFields()" style="width:100%">Enregistrer les champs</button>
-    <p class="muted" style="font-size:11px;margin:6px 0 0">Un nouveau champ devient une variable utilisable dans la séquence. Vider une valeur supprime le champ personnalisé.</p>`;
+   `;
 }
 
 async function saveContactFields() {
