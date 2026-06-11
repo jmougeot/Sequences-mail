@@ -6,6 +6,7 @@ import { authUrl, handleOAuthCallback } from "./services/google.js";
 import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit } from "./services/scheduler.js";
+import { registerB2bRoutes } from "./services/b2b/routes.js";
 
 export function createServer(): express.Express {
   const app = express();
@@ -13,6 +14,9 @@ export function createServer(): express.Express {
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
   // Relatif au projet, pas au répertoire de lancement
   app.use(express.static(fileURLToPath(new URL("../public", import.meta.url))));
+
+  // Moteur de recherche B2B (prospection)
+  registerB2bRoutes(app);
 
   // --- Comptes Google ---
   app.get("/auth/google", (_req, res) => res.redirect(authUrl()));

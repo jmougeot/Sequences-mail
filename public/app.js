@@ -22,6 +22,7 @@ function renderNav(active) {
   const links = [
     ["index.html", "Tableau de bord"],
     ["campaigns.html", "Campagnes"],
+    ["leads.html", "Prospection"],
     ["settings.html", "Paramètres"],
   ];
   document.body.insertAdjacentHTML(

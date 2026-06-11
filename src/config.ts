@@ -13,6 +13,15 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID ?? "",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   },
+  // Moteur de recherche pour la prospection (LinkedIn). Si une clé est présente,
+  // l'API correspondante devient prioritaire ; sinon, repli sur le scraping HTML
+  // de moteurs publics (Yahoo, Ecosia…). Priorité : Google > Serper > Brave.
+  search: {
+    googleApiKey: process.env.GOOGLE_SEARCH_API_KEY ?? "",
+    googleCx: process.env.GOOGLE_SEARCH_CX ?? "", // ID du moteur de recherche programmable
+    serperApiKey: process.env.SERPER_API_KEY ?? "",
+    braveApiKey: process.env.BRAVE_SEARCH_API_KEY ?? "",
+  },
   attioApiKey: process.env.ATTIO_API_KEY ?? "",
   // Slug d'un attribut texte sur l'objet "people" d'Attio où écrire l'avancement de séquence
   attioStageAttribute: process.env.ATTIO_STAGE_ATTRIBUTE ?? "",

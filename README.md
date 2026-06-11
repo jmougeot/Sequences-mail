@@ -1,6 +1,6 @@
 # Sequence Mail
 
-Outil de séquences email (cold outreach) multi-comptes Google Workspace : campagnes indépendantes, import CSV / Attio, détection automatique des réponses, répartition de charge entre comptes et protection de la délivrabilité.
+Outil de séquences email (cold outreach) multi-comptes Google Workspace : campagnes indépendantes, import CSV / Attio, détection automatique des réponses, répartition de charge entre comptes, protection de la délivrabilité — et **moteur de recherche B2B intégré** (recherche d'entreprises françaises + emails des dirigeants, sans outil payant).
 
 ## Démarrage
 
@@ -40,6 +40,57 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 ### Import des contacts
 - **CSV** : colonnes `email` (obligatoire), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Les doublons (même email déjà inscrit à la campagne) sont ignorés.
 - **Attio** : import des personnes dont un attribut de statut CRM correspond aux valeurs choisies.
+- **Prospection intégrée** : depuis la page Prospection (voir ci-dessous), sans CSV.
+
+### Prospection B2B (page « Prospection »)
+
+Moteur de recherche B2B interne, 100 % gratuit (pas de FullEnrich/ContactOut/Lemlist) :
+
+1. **Recherche en trois choix** : un secteur, une fourchette de taille d'entreprise et une
+   catégorie de personne → les prospects s'affichent sous les résultats. Deux familles de catégories :
+   - **Dirigeants** (Président/CEO, Directeur général, Gérant…) : immédiat, depuis l'API publique
+     [Recherche d'Entreprises](https://recherche-entreprises.api.gouv.fr) de l'État (toutes les
+     entreprises françaises, dirigeants et fonctions inclus, sans clé ni quota payant) ;
+   - **Par fonction** (Commerciaux/Sales, Marketing, RH, Tech…) : ces personnes ne figurent pas dans
+     la base officielle ; elles sont trouvées via une recherche web, dont on extrait nom, poste et URL
+     LinkedIn — lancé automatiquement pour chaque entreprise de la page. Chaque fonction est étendue à
+     ses **synonymes FR + EN** (« commercial » couvre aussi sales, ventes, business developer, account
+     executive/manager) via un `OR` dans la requête, pour ne pas rater les intitulés anglophones.
+   Filtres avancés repliés : mots-clés, code NAF précis, départements, code postal, chiffre d'affaires.
+2. **Enrichissement local** d'une sélection, au choix (cases à cocher) :
+   - **LinkedIn** (par défaut) : profil de chaque dirigeant trouvé via les moteurs de recherche
+     publics (Yahoo → Ecosia → Bing → DuckDuckGo, avec quarantaine automatique du moteur qui
+     bloque) ; le slug du profil doit correspondre au nom, sinon on ne garde rien — mieux vaut pas
+     de LinkedIn qu'un mauvais ;
+   - **Emails** : découverte du **site web** (domaines devinés et validés par le contenu, sinon
+     recherche web hors annuaires, corrigeable à la main d'un clic), **crawl léger** (contact,
+     mentions légales, équipe) pour récolter les emails publiés et le pattern d'adressage
+     (`prenom.nom@`…), puis génération de l'email de chaque dirigeant, **vérifié par SMTP**
+     (RCPT TO + détection de catch-all) quand le port 25 sortant est ouvert — rarement le cas sur
+     une connexion résidentielle (email alors « probable ») ; depuis un VPS, la plupart passent en
+     « vérifié ».
+3. **Exploitation** : filtre par intitulé de poste (Président, Gérant, Directeur Général…), par
+   fiabilité d'email ou présence de LinkedIn, sur la recherche en cours ou toute la base accumulée.
+   Puis, pour la sélection (ou tout le tableau filtré) :
+   - **export CSV** (séparateur `;`, BOM Excel) avec LinkedIn, email, poste, entreprise, SIREN,
+     ville, NAF, effectif — l'email n'est pas requis ;
+   - ou **ajout à une campagne** : les contacts avec email arrivent en statut « non lancé » avec
+     les variables `{{poste}}`, `{{ville}}` et `{{site_web}}` en plus des standards, et passent
+     par la vérification MX comme un import CSV.
+
+**Moteur de recherche LinkedIn** — deux modes, choisis automatiquement :
+- **Avec une clé d'API** (recommandé) : si `GOOGLE_SEARCH_API_KEY`+`GOOGLE_SEARCH_CX`, `SERPER_API_KEY`
+  ou `BRAVE_SEARCH_API_KEY` est dans `.env`, l'API correspondante est utilisée (priorité Google CSE >
+  Serper > Brave, avec bascule si l'une échoue). Plus fiable, légal, et titres JSON propres pour
+  extraire nom/poste. Google Programmable Search offre 100 requêtes/jour gratuites, Serper 2 500
+  requêtes offertes, Brave 2 000/mois — voir `.env.example`. Un badge dans l'UI indique le mode actif.
+- **Sans clé** (par défaut) : scraping de moteurs publics (Yahoo en tête, Ecosia/Bing/DDG en secours
+  avec quarantaine automatique du moteur qui bloque). Gratuit mais moins fiable — Google y bloque les
+  requêtes automatisées, d'où le recours à Yahoo. On ne scrape jamais LinkedIn directement (CGU) ;
+  on ne fait que retrouver l'URL publique des profils via la recherche web.
+
+Limites assumées : couverture France uniquement (base SIRENE/RNE). La recherche par fonction trouve
+les profils bien référencés, pas l'organigramme complet.
 
 ### Gestion des réponses
 - Le système interroge les boîtes connectées toutes les ~4–7 minutes.
@@ -82,3 +133,9 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 | POST | `/api/campaigns/:id/import` | Importer un CSV (body brut, `Content-Type: text/csv`) |
 | POST | `/api/campaigns/:id/attio-sync` | `{ status_attribute, statuses[] }` |
 | GET | `/api/campaigns/:id/contacts` | Détail par contact (statut, étape, émetteur, erreurs) |
+| GET | `/api/b2b/search` | Recherche d'entreprises (`q`, `section`, `naf`, `effectifs`, `departements`, `code_postal`, `ca_min/max`, `page`) |
+| POST | `/api/b2b/enrich` | Enrichir `{ sirens[], linkedin?, emails?, people? }` (`people` = fonction à chercher, ex. `"commercial"`) — job de fond, suivi via `GET /api/b2b/enrich/status` |
+| GET | `/api/b2b/leads` | Prospects (`role`, `status`, `linkedin=1`, `source`, `siren`, `sirens`, `ids`, `q`) |
+| GET | `/api/b2b/leads.csv` | Export CSV des prospects (mêmes filtres) |
+| PATCH | `/api/b2b/companies/:siren` | Corriger le domaine `{ domain }` |
+| POST | `/api/b2b/export` | Ajouter `{ campaign_id, lead_ids[] }` à une campagne |

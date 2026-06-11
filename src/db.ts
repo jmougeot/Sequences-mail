@@ -86,6 +86,45 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts (status, next_send_at);
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_messages_cc ON messages (campaign_contact_id);
+
+-- Moteur de recherche B2B interne : entreprises issues de l'API publique
+-- Recherche d'Entreprises (data.gouv), enrichies localement (domaine, emails).
+CREATE TABLE IF NOT EXISTS b2b_companies (
+  siren TEXT PRIMARY KEY,
+  name TEXT NOT NULL,                    -- raison sociale (mise en forme lisible)
+  brand TEXT,                            -- nom commercial / enseigne
+  naf TEXT,                              -- code NAF (ex. 62.01Z)
+  naf_section TEXT,                      -- section NAF (A..U)
+  effectif TEXT,                         -- code INSEE tranche d'effectifs (ex. 12 = 20-49)
+  categorie TEXT,                        -- PME | ETI | GE
+  ville TEXT,
+  code_postal TEXT,
+  departement TEXT,
+  date_creation TEXT,
+  domain TEXT,                           -- domaine email/web retenu
+  domain_status TEXT,                    -- verified | guessed | manual | not_found
+  email_pattern TEXT,                    -- pattern détecté sur le site (prenom.nom, ...)
+  smtp TEXT,                             -- ok | catch_all | unreachable (capacité de vérification)
+  enriched_at INTEGER,                   -- epoch ms du dernier enrichissement
+  raw TEXT,                              -- JSON brut de l'API (dont dirigeants)
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS b2b_leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  siren TEXT NOT NULL REFERENCES b2b_companies(siren) ON DELETE CASCADE,
+  first_name TEXT,
+  last_name TEXT,
+  role TEXT,                             -- fonction (Président, Gérant, ...) ou 'Email générique'
+  email TEXT,
+  email_status TEXT NOT NULL,            -- pending | verified | pattern | probable | generic | not_found | no_domain
+  source TEXT NOT NULL,                  -- dirigeant | site
+  linkedin TEXT,                         -- URL du profil LinkedIn
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE INDEX IF NOT EXISTS idx_b2b_leads_siren ON b2b_leads (siren);
+CREATE INDEX IF NOT EXISTS idx_b2b_leads_email ON b2b_leads (email);
 `);
 
 // Migrations additives sur les bases existantes
@@ -102,6 +141,7 @@ addColumnIfMissing("steps", "subject_b", "subject_b TEXT");
 addColumnIfMissing("campaign_contacts", "variant", "variant TEXT");
 addColumnIfMissing("campaign_contacts", "handled_msgs", "handled_msgs TEXT");
 addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
+addColumnIfMissing("b2b_leads", "linkedin", "linkedin TEXT");
 
 // v1 : la signature n'est plus ajoutée automatiquement en fin d'email mais placée
 // via {{signature}} — les étapes existantes la reçoivent en fin de corps pour
