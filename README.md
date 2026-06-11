@@ -52,10 +52,12 @@ Moteur de recherche B2B interne, 100 % gratuit (pas de FullEnrich/ContactOut/Lem
      [Recherche d'Entreprises](https://recherche-entreprises.api.gouv.fr) de l'État (toutes les
      entreprises françaises, dirigeants et fonctions inclus, sans clé ni quota payant) ;
    - **Par fonction** (Commerciaux/Sales, Marketing, RH, Tech…) : ces personnes ne figurent pas dans
-     la base officielle ; elles sont trouvées via une recherche web, dont on extrait nom, poste et URL
-     LinkedIn — lancé automatiquement pour chaque entreprise de la page. Chaque fonction est étendue à
-     ses **synonymes FR + EN** (« commercial » couvre aussi sales, ventes, business developer, account
-     executive/manager) via un `OR` dans la requête, pour ne pas rater les intitulés anglophones.
+     la base officielle ; elles sont trouvées via une recherche web ciblée sur les profils
+     (`site:linkedin.com/in`), dont on extrait nom, poste et URL LinkedIn — lancé automatiquement
+     pour chaque entreprise de la page. Chaque fonction est étendue à ses **synonymes FR + EN**
+     (« commercial » couvre aussi sales, ventes, business developer, account executive/manager) et
+     plusieurs requêtes sont fusionnées — la combinée en `OR`, une par synonyme, 2 pages côté API —
+     pour remonter le plus de profils possible par entreprise.
    Filtres avancés repliés : mots-clés, code NAF précis, départements, code postal, chiffre d'affaires.
 2. **Enrichissement local** d'une sélection, au choix (cases à cocher) :
    - **LinkedIn** (par défaut) : profil de chaque dirigeant trouvé via les moteurs de recherche

@@ -20,22 +20,22 @@ export function hasSearchApi(): boolean {
 
 const TIMEOUT = 10000;
 
-async function googleSearch(query: string): Promise<WebResult[]> {
+async function googleSearch(query: string, page: number): Promise<WebResult[]> {
   const { googleApiKey, googleCx } = config.search;
   const url = `https://www.googleapis.com/customsearch/v1?key=${googleApiKey}&cx=${googleCx}&q=${encodeURIComponent(
     query
-  )}&num=10&hl=fr&gl=fr`;
+  )}&num=10&start=${1 + page * 10}&hl=fr&gl=fr`;
   const res = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT) });
   if (!res.ok) throw new Error(`Google CSE ${res.status}`);
   const data = (await res.json()) as { items?: Array<{ link: string; title: string; snippet?: string }> };
   return (data.items ?? []).map((i) => ({ url: i.link, title: i.title ?? "", snippet: i.snippet ?? "" }));
 }
 
-async function serperSearch(query: string): Promise<WebResult[]> {
+async function serperSearch(query: string, page: number): Promise<WebResult[]> {
   const res = await fetch("https://google.serper.dev/search", {
     method: "POST",
     headers: { "X-API-KEY": config.search.serperApiKey, "content-type": "application/json" },
-    body: JSON.stringify({ q: query, gl: "fr", hl: "fr", num: 10 }),
+    body: JSON.stringify({ q: query, gl: "fr", hl: "fr", num: 10, page: page + 1 }),
     signal: AbortSignal.timeout(TIMEOUT),
   });
   if (!res.ok) throw new Error(`Serper ${res.status}`);
@@ -43,8 +43,8 @@ async function serperSearch(query: string): Promise<WebResult[]> {
   return (data.organic ?? []).map((i) => ({ url: i.link, title: i.title ?? "", snippet: i.snippet ?? "" }));
 }
 
-async function braveSearch(query: string): Promise<WebResult[]> {
-  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&country=fr&search_lang=fr`;
+async function braveSearch(query: string, page: number): Promise<WebResult[]> {
+  const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&country=fr&search_lang=fr&count=20&offset=${page}`;
   const res = await fetch(url, {
     headers: { "X-Subscription-Token": config.search.braveApiKey, accept: "application/json" },
     signal: AbortSignal.timeout(TIMEOUT),
@@ -63,13 +63,14 @@ const cooldownUntil = new Map<string, number>();
  * Renvoie les résultats d'un provider configuré, ou null si aucun n'est
  * configuré/disponible (l'appelant bascule alors sur le scraping public).
  * Un tableau vide signifie « provider OK mais aucun résultat ».
+ * `page` (0-based) permet de lire au-delà des ~10 premiers résultats.
  */
-export async function apiSearch(query: string): Promise<WebResult[] | null> {
+export async function apiSearch(query: string, page = 0): Promise<WebResult[] | null> {
   const s = config.search;
   const providers: Array<{ name: string; run: () => Promise<WebResult[]> }> = [];
-  if (s.googleApiKey && s.googleCx) providers.push({ name: "google", run: () => googleSearch(query) });
-  if (s.serperApiKey) providers.push({ name: "serper", run: () => serperSearch(query) });
-  if (s.braveApiKey) providers.push({ name: "brave", run: () => braveSearch(query) });
+  if (s.googleApiKey && s.googleCx) providers.push({ name: "google", run: () => googleSearch(query, page) });
+  if (s.serperApiKey) providers.push({ name: "serper", run: () => serperSearch(query, page) });
+  if (s.braveApiKey) providers.push({ name: "brave", run: () => braveSearch(query, page) });
   if (!providers.length) return null;
 
   let lastError: unknown = null;

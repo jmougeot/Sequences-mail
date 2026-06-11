@@ -107,7 +107,9 @@ function profilesFromApi(results: WebResult[]): string[] {
 }
 
 export async function findLinkedIn(first: string, last: string, company: string): Promise<string | null> {
-  const query = `"${first} ${last}" ${company} linkedin`;
+  // site: force les moteurs à ne renvoyer que des profils — bien plus dense
+  // qu'un simple mot-clé "linkedin" noyé dans les offres d'emploi et pages presse
+  const query = `site:linkedin.com/in "${first} ${last}" ${company}`;
   const lastTokens = last.split(/[\s-]+/).map(norm).filter((t) => t.length >= 3);
   const firstNorm = norm(first);
   const matches = (profile: string) => {
@@ -135,14 +137,18 @@ export interface FoundPerson {
 
 /** Décode les entités HTML courantes des titres de résultats. */
 function decodeEntities(s: string): string {
-  return s
-    .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(parseInt(d, 10)))
-    .replace(/&eacute;/gi, "é").replace(/&egrave;/gi, "è").replace(/&ecirc;/gi, "ê")
-    .replace(/&agrave;/gi, "à").replace(/&ccedil;/gi, "ç").replace(/&ocirc;/gi, "ô")
-    .replace(/&icirc;/gi, "î").replace(/&ucirc;/gi, "û").replace(/&euml;/gi, "ë")
-    .replace(/&nbsp;/gi, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  // deux passes : certains moteurs double-encodent (&amp;amp; → &amp; → &)
+  for (let i = 0; i < 2; i++) {
+    s = s
+      .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(parseInt(d, 10)))
+      .replace(/&eacute;/gi, "é").replace(/&egrave;/gi, "è").replace(/&ecirc;/gi, "ê")
+      .replace(/&agrave;/gi, "à").replace(/&ccedil;/gi, "ç").replace(/&ocirc;/gi, "ô")
+      .replace(/&icirc;/gi, "î").replace(/&ucirc;/gi, "û").replace(/&euml;/gi, "ë")
+      .replace(/&nbsp;/gi, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  }
+  return s;
 }
 
 /** Ancres de la page de résultats dont la cible est un profil : URL → textes (titres). */
@@ -189,6 +195,8 @@ function parsePerson(url: string, titles: string[], company: string): FoundPerso
     name = parts[0].trim();
     role = (parts[1] ?? "").split(/ \| /)[0].split(/ chez /i)[0].trim() || null;
     if (role && /linkedin|profils|posts?/i.test(role)) role = null;
+    // titre sans poste ("Prénom Nom - Entreprise") : l'entreprise n'est pas un poste
+    if (role && norm(role) === norm(company)) role = null;
   }
   if (!name && nameOnly) name = nameOnly;
   name = name.replace(/\s*\|\s*LinkedIn.*$/i, "").replace(/\s*sur LinkedIn.*$/i, "").trim();
@@ -213,7 +221,9 @@ function parsePerson(url: string, titles: string[], company: string): FoundPerso
 /**
  * Trouve des personnes d'une fonction donnée (ex. "commercial") dans une
  * entreprise, via les pages de résultats des moteurs : noms, postes et URLs
- * LinkedIn extraits des titres. Best effort, qualité dépendante des moteurs.
+ * LinkedIn extraits des titres. Plusieurs requêtes (combinée + une par
+ * synonyme, 2 pages côté API) fusionnées puis dédoublonnées, pour remonter
+ * le plus de profils possible. Best effort, qualité dépendante des moteurs.
  */
 /** Dédoublonne une liste de personnes par nom normalisé, en gardant l'ordre. */
 function dedupePeople(people: FoundPerson[]): FoundPerson[] {
@@ -251,38 +261,60 @@ const ROLE_SYNONYMS: Array<{ match: RegExp; terms: string[] }> = [
   },
 ];
 
+/** Synonymes d'un mot-clé de fonction (ou le mot-clé seul s'il n'a pas de groupe). */
+function roleTerms(keyword: string): string[] {
+  const group = ROLE_SYNONYMS.find((g) => g.match.test(keyword));
+  return group ? group.terms : [keyword.trim()];
+}
+
 /** Transforme un mot-clé de fonction en expression de recherche avec ses synonymes (OR). */
 function buildRoleExpr(keyword: string): string {
-  const group = ROLE_SYNONYMS.find((g) => g.match.test(keyword));
-  const terms = group ? group.terms : [keyword.trim()];
+  const terms = roleTerms(keyword);
   const ors = terms.map((t) => (t.includes(" ") ? `"${t}"` : t)).join(" OR ");
   return terms.length > 1 ? `(${ors})` : ors;
 }
 
 export async function findPeopleByRole(company: string, keyword: string): Promise<FoundPerson[]> {
-  const query = `"${company}" ${buildRoleExpr(keyword)} linkedin`;
+  const combined = `site:linkedin.com/in "${company}" ${buildRoleExpr(keyword)}`;
+  // une requête ciblée par synonyme en plus de la requête combinée : chaque
+  // variante remonte ~10 résultats différents, donc des profils en plus
+  const terms = roleTerms(keyword);
+  const variants = terms.length > 1 ? terms.map((t) => `site:linkedin.com/in "${company}" "${t}"`) : [];
 
-  // 1. API de recherche si configurée : un résultat = une personne (titre + snippet)
-  const api = await apiSearch(query);
-  if (api !== null) {
-    const people: FoundPerson[] = [];
-    for (const r of api) {
+  const people: FoundPerson[] = [];
+  // un résultat de recherche = une personne potentielle (titre + snippet)
+  const collect = (results: WebResult[]) => {
+    for (const r of results) {
       const prof = PROFILE_ONE.exec(r.url) ?? PROFILE_ONE.exec(`${r.title} ${r.snippet}`);
       if (!prof) continue;
       const p = parsePerson(prof[0].replace(/\/+$/, ""), [r.title, r.snippet], company);
       if (p) people.push(p);
     }
+  };
+
+  // 1. API de recherche si configurée : requête combinée sur 2 pages puis les
+  //    variantes — budget ≤ 7 appels API par entreprise
+  const first = await apiSearch(combined);
+  if (first !== null) {
+    collect(first);
+    collect((await apiSearch(combined, 1)) ?? []);
+    for (const q of variants.slice(0, 5)) collect((await apiSearch(q)) ?? []);
     return dedupePeople(people);
   }
 
-  // 2. repli : scraping de moteurs publics
-  const found = await scrapeEngines(query, (html) => {
-    const people: FoundPerson[] = [];
-    for (const [url, titles] of profileAnchors(html)) {
-      const p = parsePerson(url, titles, company);
-      if (p) people.push(p);
-    }
-    return people;
-  });
-  return found ? dedupePeople(found) : [];
+  // 2. repli : scraping de moteurs publics — requête combinée + 4 variantes,
+  //    résultats fusionnés (les moteurs gèrent mal les longs OR, les variantes
+  //    simples compensent ; chacune coûte ~3-5 s à cause du throttle)
+  for (const q of [combined, ...variants.slice(0, 4)]) {
+    const found = await scrapeEngines(q, (html) => {
+      const out: FoundPerson[] = [];
+      for (const [url, titles] of profileAnchors(html)) {
+        const p = parsePerson(url, titles, company);
+        if (p) out.push(p);
+      }
+      return out;
+    });
+    if (found) people.push(...found);
+  }
+  return dedupePeople(people);
 }
