@@ -102,6 +102,17 @@ export interface SendResult {
   rfc822MessageId: string;
 }
 
+/** Convertit le corps texte en HTML minimal : *texte* devient italique, sauts de ligne préservés. */
+export function bodyToHtml(text: string): string {
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/\r?\n/g, "<br>\n");
+  return `<div dir="ltr">${escaped}</div>`;
+}
+
 export async function sendEmail(
   account: AccountRow,
   opts: {
@@ -118,22 +129,32 @@ export async function sendEmail(
   const from = account.from_name
     ? `${encodeHeader(account.from_name)} <${account.email}>`
     : account.email;
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+  // multipart/alternative : texte brut (les *étoiles* restent visibles) + HTML (italique rendu),
+  // comme le ferait Gmail — le client du destinataire choisit la version.
+  const boundary = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   const headers = [
     `From: ${from}`,
     `To: ${opts.to}`,
     `Subject: ${encodeHeader(opts.subject)}`,
     `Message-ID: ${rfc822MessageId}`,
     "MIME-Version: 1.0",
-    'Content-Type: text/plain; charset="UTF-8"',
-    "Content-Transfer-Encoding: base64",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
   ];
   if (opts.inReplyTo) {
     headers.push(`In-Reply-To: ${opts.inReplyTo}`, `References: ${opts.inReplyTo}`);
   }
-  const raw = Buffer.from(
-    headers.join("\r\n") + "\r\n\r\n" + Buffer.from(opts.body, "utf8").toString("base64"),
-    "utf8"
-  )
+  const mime =
+    headers.join("\r\n") +
+    "\r\n\r\n" +
+    `--${boundary}\r\n` +
+    'Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
+    b64(opts.body) +
+    `\r\n--${boundary}\r\n` +
+    'Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
+    b64(bodyToHtml(opts.body)) +
+    `\r\n--${boundary}--`;
+  const raw = Buffer.from(mime, "utf8")
     .toString("base64")
     .replace(/\+/g, "-")
     .replace(/\//g, "_")
@@ -173,6 +194,12 @@ export interface ForeignMessage {
   from: string;
   subject: string;
   text: string;
+  /** En-tête Auto-Submitted (RFC 3834) : "auto-replied"/"auto-generated" = réponse machine */
+  autoSubmitted: string;
+  /** En-tête Precedence : "auto_reply"/"bulk" sur certaines réponses automatiques */
+  precedence: string;
+  /** X-Autoreply / X-Autorespond présents (répondeurs d'absence non standards) */
+  hasAutoReplyHeader: boolean;
 }
 
 /**
@@ -200,6 +227,9 @@ export async function getForeignMessages(
         from,
         subject: header("subject"),
         text: extractPlainText(msg.payload as GmailPart) || msg.snippet || "",
+        autoSubmitted: header("auto-submitted"),
+        precedence: header("precedence"),
+        hasAutoReplyHeader: Boolean(header("x-autoreply") || header("x-autorespond")),
       });
     }
   }

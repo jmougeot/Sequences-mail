@@ -45,14 +45,15 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 - Le système interroge les boîtes connectées toutes les ~4–7 minutes.
 - Dès qu'un contact répond (n'importe quel message du fil qui ne vient pas du compte émetteur), il passe au statut `replied` et est **retiré du workflow** : plus aucune relance ne lui sera envoyée, même après l'envoi de la dernière étape.
 - **Détection des refus** : si la réponse contient une demande de désinscription ou un refus (« pas intéressé », « ne plus me contacter », « unsubscribe », etc.), le contact passe en `opted_out`, est ajouté à la liste globale `do_not_contact` (exclu de toutes les campagnes actuelles et futures, y compris lors d'imports ultérieurs) et sa fiche Attio est taguée « Pas intéressé / désinscrit 🚫 ».
-- **Détection des bounces** : un message de `mailer-daemon`/`postmaster` passe le contact en `bounced`, blackliste l'adresse (plus jamais contactée) et tague Attio « Email invalide ⚠️ ». Les bounces sont exclus du calcul du taux de réponse.
-- **Réponses automatiques (OOO)** : un « absent du bureau / out of office » ne stoppe pas la séquence — la relance est simplement reportée d'environ 7 jours. Une vraie réponse ultérieure est traitée normalement.
+- **Détection des bounces** (signaux serveur uniquement) : un message dont l'expéditeur est `mailer-daemon`/`postmaster` (convention RFC 5321) ou l'adresse NDR fixe d'Exchange passe le contact en `bounced`. Si le bounce est **permanent** (code DSN 5.X.X, « user unknown »…), l'adresse est blacklistée définitivement ; un échec temporaire (boîte pleine…) arrête la séquence sans blacklister. Les bounces sont exclus du taux de réponse.
+- **Réponses automatiques (OOO)** : détectées uniquement par les signaux machine — en-tête `Auto-Submitted` (RFC 3834, posé par Gmail/Outlook), `X-Autoreply`, `Precedence: auto_reply`, ou préfixe de sujet généré par le client (« Automatic reply: », « Réponse automatique : »). La relance est alors reportée d'environ 7 jours. **Aucune analyse du texte humain** : « je suis en déplacement, appelez-moi » est une vraie réponse et arrête la séquence. En cas de doute, le système choisit toujours l'arrêt de la séquence (échec côté sûr).
+- La classification opt-out ignore le texte cité (`>` et « Le … a écrit : ») : une mention de désinscription présente dans *votre propre template* cité dans la réponse ne déclenche rien.
 
 ### Répartition entre comptes
 - Le premier email d'un contact part du compte **le moins chargé** du jour (équilibrage automatique).
 - Les relances partent toujours **du même compte** que le premier email (continuité du fil).
 - Quota quotidien par compte configurable depuis le tableau de bord (défaut : `DEFAULT_DAILY_LIMIT`).
-- Chaque compte a son **nom d'expéditeur** (champ « De ») et sa **signature**, configurables dans le tableau de bord. La signature est ajoutée à la fin de chaque email du compte et accepte les variables. Le template peut aussi utiliser `{{sender_name}}` pour mentionner l'expéditeur dans le corps.
+- Chaque compte a son **nom d'expéditeur** (champ « De ») et sa **signature**, configurables dans le tableau de bord. La signature s'insère à l'emplacement de `{{signature}}` dans le corps des étapes (libre à vous de l'omettre, ex. sur une relance) et accepte les variables. Le template peut aussi utiliser `{{sender_name}}` pour mentionner l'expéditeur dans le corps.
 
 ### Délivrabilité
 - **Warm-up automatique** : chaque compte démarre à 10 emails/jour puis gagne +5/semaine jusqu'à son quota configuré (désactivable par compte dans Paramètres pour les boîtes déjà rodées).

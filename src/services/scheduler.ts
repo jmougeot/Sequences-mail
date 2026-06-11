@@ -46,59 +46,91 @@ function normalize(text: string): string {
     .replace(/\s+/g, " ");
 }
 
-const BOUNCE_FROM = ["mailer-daemon", "postmaster", "mail delivery subsystem", "mail delivery system"];
-const BOUNCE_SUBJECTS = [
-  "undeliver",
-  "delivery status notification",
-  "delivery failed",
-  "mail delivery failed",
-  "returned to sender",
-  "address not found",
-  "echec de la remise",
-  "non remis",
-  "message non distribue",
+// Expéditeurs de notifications d'échec : convention universelle (mailer-daemon,
+// postmaster — RFC 5321 §4.5.1) + l'adresse fixe des NDR Microsoft Exchange.
+const BOUNCE_FROM = [
+  "mailer-daemon",
+  "postmaster",
+  "mail delivery subsystem",
+  "mail delivery system",
+  "microsoftexchange329e71ec88ae4615bbc36ab6ce41109e",
 ];
 
-/** Détecte un message de bounce (adresse invalide, boîte pleine, rejet serveur…). */
-export function isBounce(from: string, subject: string): boolean {
-  const f = normalize(from);
-  const s = normalize(subject);
-  return BOUNCE_FROM.some((p) => f.includes(p)) || BOUNCE_SUBJECTS.some((p) => s.includes(p));
+/**
+ * Détecte un message de bounce. Volontairement restrictif : uniquement le champ
+ * From des notifications serveur. Un bounce non détecté est traité comme une
+ * réponse => la séquence s'arrête quand même (échec côté sûr).
+ */
+export function isBounce(m: Pick<ForeignMessage, "from">): boolean {
+  const f = normalize(m.from);
+  return BOUNCE_FROM.some((p) => f.includes(p));
 }
 
-const AUTO_REPLY_SUBJECTS = [
-  "automatic reply",
-  "auto reply",
-  "autoreply",
-  "reponse automatique",
-  "out of office",
-  "absence du bureau",
-  "auto:",
-];
-const AUTO_REPLY_TEXTS = [
-  "out of office",
-  "out of the office",
-  "absent du bureau",
-  "actuellement absent",
-  "actuellement en conge",
-  "en conges jusqu",
-  "de retour le",
-  "i am currently away",
-  "currently on leave",
-  "maternity leave",
-  "paternity leave",
-  "conge maternite",
-  "acces limite a mes emails",
-  "limited access to my email",
-  "je suis en deplacement",
-  "votre message sera traite a mon retour",
+// Codes d'erreur permanents (classe 5.X.X, RFC 3463) ou mentions explicites
+// d'adresse inexistante : seuls ces cas justifient une blackliste définitive.
+const HARD_BOUNCE_HINTS = [
+  "user unknown",
+  "address not found",
+  "does not exist",
+  "no such user",
+  "recipient rejected",
+  "address rejected",
+  "adresse introuvable",
+  "utilisateur inconnu",
 ];
 
-/** Détecte une réponse automatique d'absence (OOO) : on reporte au lieu d'arrêter. */
-export function isAutoReply(subject: string, text: string): boolean {
-  const s = normalize(subject);
+/** Bounce permanent (adresse morte) vs temporaire (boîte pleine, greylisting…). */
+export function isHardBounce(text: string): boolean {
+  if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(text)) return true; // status DSN 5.X.X
+  if (/\b55[0-4]\b/.test(text)) return true; // codes SMTP 550-554
   const t = normalize(text);
-  return AUTO_REPLY_SUBJECTS.some((p) => s.includes(p)) || AUTO_REPLY_TEXTS.some((p) => t.includes(p));
+  return HARD_BOUNCE_HINTS.some((p) => t.includes(p));
+}
+
+// Préfixes de sujet posés automatiquement par Gmail ("Réponse automatique :")
+// et Outlook/Exchange ("Automatic reply:") — jamais écrits par un humain.
+const AUTO_REPLY_SUBJECT_PREFIXES = [
+  "automatic reply",
+  "reponse automatique",
+  "out of office",
+  "auto:",
+  "autosvar",
+  "automatische antwort",
+  "respuesta automatica",
+];
+
+/**
+ * Détecte une réponse automatique d'absence via les signaux machine uniquement :
+ * en-tête Auto-Submitted (RFC 3834, posé par Gmail/Outlook/etc.), X-Autoreply,
+ * Precedence: auto_reply, ou préfixe de sujet généré par le client mail.
+ * AUCUNE analyse du texte écrit par l'humain : « je suis en déplacement,
+ * appelez-moi » est une vraie réponse et doit arrêter la séquence.
+ */
+export function isAutoReply(
+  m: Pick<ForeignMessage, "subject" | "autoSubmitted" | "precedence" | "hasAutoReplyHeader">
+): boolean {
+  const auto = m.autoSubmitted.trim().toLowerCase();
+  if (auto && auto !== "no") return true; // RFC 3834 : auto-replied / auto-generated
+  if (m.hasAutoReplyHeader) return true;
+  if (m.precedence.trim().toLowerCase() === "auto_reply") return true;
+  const s = normalize(m.subject);
+  return AUTO_REPLY_SUBJECT_PREFIXES.some((p) => s.startsWith(p));
+}
+
+/**
+ * Retire les lignes citées (">") et tout ce qui suit un marqueur de citation
+ * ("Le ... a écrit :", "On ... wrote:") : la classification (opt-out) ne doit
+ * porter que sur ce que le contact a écrit, pas sur notre email cité dessous.
+ */
+export function stripQuoted(text: string): string {
+  const out: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(le|on)\s.{0,100}(a [ée]crit|wrote)\s*:?\s*$/i.test(line)) break;
+    if (/^\s*-{2,}\s*(message d'origine|original message|forwarded message)/i.test(line)) break;
+    if (/^\s*>/.test(line)) continue;
+    out.push(line);
+  }
+  return out.join("\n");
 }
 
 /**
@@ -235,7 +267,12 @@ async function processOne(row: DueRow): Promise<void> {
     company: row.company,
     extra: row.extra,
   };
-  const senderVars = { sender_name: account.from_name ?? account.email };
+  const senderName = account.from_name ?? account.email;
+  const senderVars = {
+    sender_name: senderName,
+    // {{signature}} : signature du compte, placée librement dans le template
+    signature: account.signature ? renderTemplate(account.signature, contact, { sender_name: senderName }) : "",
+  };
   const isFollowUp = row.current_step > 0 && !!row.thread_id;
 
   // A/B test : si l'étape 1 a un sujet B, chaque contact reçoit une variante (50/50),
@@ -249,10 +286,7 @@ async function processOne(row: DueRow): Promise<void> {
     ? `Re: ${renderTemplate(subjectFor(firstStep), contact, senderVars)}`
     : renderTemplate(subjectFor(step), contact, senderVars);
 
-  let body = renderTemplate(step.body, contact, senderVars);
-  if (account.signature) {
-    body += `\n\n${renderTemplate(account.signature, contact, senderVars)}`;
-  }
+  const body = renderTemplate(step.body, contact, senderVars);
 
   try {
     const result = await sendEmail(account, {
@@ -415,13 +449,16 @@ export async function checkRepliesTick(): Promise<void> {
       for (const m of messages) {
         if (handled.includes(m.id)) continue;
 
-        if (isBounce(m.from, m.subject)) {
-          terminate(row, "bounced", true, "Email invalide (bounce) ⚠️");
-          console.log(`[bounce] ${row.email} : adresse invalide — blacklistée, séquence arrêtée`);
+        if (isBounce(m)) {
+          // Blackliste définitive uniquement sur bounce permanent (adresse morte) ;
+          // un échec temporaire (boîte pleine…) arrête la séquence sans blacklister.
+          const hard = isHardBounce(m.text);
+          terminate(row, "bounced", hard, hard ? "Email invalide (bounce) ⚠️" : "Email en erreur (bounce temporaire)");
+          console.log(`[bounce] ${row.email} : ${hard ? "adresse morte — blacklistée" : "échec temporaire"} — séquence arrêtée`);
           terminal = true;
           break;
         }
-        if (isAutoReply(m.subject, m.text)) {
+        if (isAutoReply(m)) {
           handled.push(m.id);
           handledChanged = true;
           if (row.status === "in_progress") {
@@ -433,7 +470,7 @@ export async function checkRepliesTick(): Promise<void> {
           }
           continue;
         }
-        const optedOut = isOptOut(m.text);
+        const optedOut = isOptOut(stripQuoted(m.text));
         terminate(
           row,
           optedOut ? "opted_out" : "replied",

@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS campaigns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',  -- active | paused | archived
+  status TEXT NOT NULL DEFAULT 'paused',  -- active | paused | archived
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -102,3 +102,13 @@ addColumnIfMissing("steps", "subject_b", "subject_b TEXT");
 addColumnIfMissing("campaign_contacts", "variant", "variant TEXT");
 addColumnIfMissing("campaign_contacts", "handled_msgs", "handled_msgs TEXT");
 addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
+
+// v1 : la signature n'est plus ajoutée automatiquement en fin d'email mais placée
+// via {{signature}} — les étapes existantes la reçoivent en fin de corps pour
+// conserver exactement le rendu d'avant.
+if ((db.pragma("user_version", { simple: true }) as number) < 1) {
+  db.exec(
+    "UPDATE steps SET body = body || char(10) || char(10) || '{{signature}}' WHERE body NOT LIKE '%{{signature}}%'"
+  );
+  db.pragma("user_version = 1");
+}

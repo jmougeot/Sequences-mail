@@ -6,6 +6,7 @@ const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company"]);
 
 export interface ImportReport {
   imported: number;
+  updated: number; // déjà inscrit à la campagne : ses champs ont été rafraîchis
   skipped: number;
   errors: string[];
 }
@@ -37,7 +38,7 @@ export async function importContacts(
   rows: Array<Record<string, string>>,
   source: { attioRecordIds?: Record<string, string> } = {}
 ): Promise<ImportReport> {
-  const report: ImportReport = { imported: 0, skipped: 0, errors: [] };
+  const report: ImportReport = { imported: 0, updated: 0, skipped: 0, errors: [] };
 
   // Vérification MX par domaine, en amont de la transaction (résolution DNS asynchrone)
   const domains = new Set(
@@ -55,13 +56,19 @@ export async function importContacts(
       first_name = COALESCE(excluded.first_name, contacts.first_name),
       last_name  = COALESCE(excluded.last_name, contacts.last_name),
       company    = COALESCE(excluded.company, contacts.company),
-      extra      = COALESCE(excluded.extra, contacts.extra),
+      -- Fusion des champs personnalisés : les nouvelles valeurs écrasent les
+      -- anciennes, les champs absents du nouvel import sont conservés
+      extra      = CASE
+        WHEN excluded.extra IS NULL THEN contacts.extra
+        WHEN contacts.extra IS NULL THEN excluded.extra
+        ELSE json_patch(contacts.extra, excluded.extra)
+      END,
       attio_record_id = COALESCE(excluded.attio_record_id, contacts.attio_record_id)
   `);
   const getContactId = db.prepare("SELECT id, do_not_contact FROM contacts WHERE email = ?");
   const enroll = db.prepare(`
     INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
-    VALUES (?, ?, 'pending')
+    VALUES (?, ?, 'held')
   `);
 
   const run = db.transaction(() => {
@@ -99,7 +106,7 @@ export async function importContacts(
       }
       const r = enroll.run(campaignId, id);
       if (r.changes > 0) report.imported++;
-      else report.skipped++; // déjà inscrit à cette campagne
+      else report.updated++; // déjà inscrit : ses champs viennent d'être mis à jour
     }
   });
   run();
@@ -131,5 +138,5 @@ export function renderTemplate(
     ...(contact.extra ? (JSON.parse(contact.extra) as Record<string, string>) : {}),
     ...extraVars,
   };
-  return template.replace(/\{\{\s*([\w]+)\s*\}\}/g, (_, key: string) => vars[key] ?? "");
+  return template.replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
 }

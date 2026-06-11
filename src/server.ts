@@ -74,7 +74,7 @@ export function createServer(): express.Express {
       return res.status(400).json({ error: "La première étape doit avoir un sujet" });
     }
     const result = db.transaction(() => {
-      const { lastInsertRowid } = db.prepare("INSERT INTO campaigns (name) VALUES (?)").run(name);
+      const { lastInsertRowid } = db.prepare("INSERT INTO campaigns (name, status) VALUES (?, 'paused')").run(name);
       const insert = db.prepare(
         "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days) VALUES (?, ?, ?, ?, ?, ?)"
       );
@@ -99,6 +99,7 @@ export function createServer(): express.Express {
         `SELECT cp.id, cp.name, cp.status, cp.created_at,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id) AS steps,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id) AS contacts,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'held') AS held,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'pending') AS pending,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'in_progress') AS in_progress,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'replied') AS replied,
@@ -121,13 +122,12 @@ export function createServer(): express.Express {
       contacted > 0 ? Math.round((replied / contacted) * 1000) / 10 : 0;
 
     for (const c of campaigns) {
-      // Les bounces n'ont jamais reçu l'email : exclus du dénominateur
-      const contacted = Number(c.contacts) - Number(c.pending) - Number(c.bounced);
+      // Les bounces n'ont jamais reçu l'email, les held/pending pas encore lancés : exclus du dénominateur
+      const contacted = Number(c.contacts) - Number(c.held) - Number(c.pending) - Number(c.bounced);
       c.reply_rate = rate(Number(c.replied), contacted);
+      const launched = Number(c.contacts) - Number(c.held);
       c.progress =
-        Number(c.contacts) > 0
-          ? Math.round(((Number(c.contacts) - Number(c.pending) - Number(c.in_progress)) / Number(c.contacts)) * 100)
-          : 0;
+        launched > 0 ? Math.round(((launched - Number(c.pending) - Number(c.in_progress)) / launched) * 100) : 0;
       c.ab_test = c.subject_b ? 1 : 0;
       c.reply_rate_a = rate(Number(c.replied_a), Number(c.contacted_a));
       c.reply_rate_b = rate(Number(c.replied_b), Number(c.contacted_b));
@@ -223,12 +223,12 @@ export function createServer(): express.Express {
       : db.prepare("SELECT email, from_name, signature FROM accounts WHERE active = 1 ORDER BY id LIMIT 1").get()) as
       | { email: string; from_name: string | null; signature: string | null }
       | undefined;
-    const senderVars = { sender_name: account?.from_name ?? account?.email ?? "Votre nom" };
-
-    let renderedBody = renderTemplate(body ?? "", sample, senderVars);
-    if (account?.signature) {
-      renderedBody += `\n\n${renderTemplate(account.signature, sample, senderVars)}`;
-    }
+    const senderName = account?.from_name ?? account?.email ?? "Votre nom";
+    const senderVars = {
+      sender_name: senderName,
+      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName }) : "",
+    };
+    const renderedBody = renderTemplate(body ?? "", sample, senderVars);
     res.json({
       from: account ? (account.from_name ? `${account.from_name} <${account.email}>` : account.email) : "(aucun compte connecté)",
       to: sample.email,
@@ -245,6 +245,7 @@ export function createServer(): express.Express {
       google_configured: Boolean(config.google.clientId),
       attio_configured: Boolean(config.attioApiKey),
       attio_stage_attribute: config.attioStageAttribute || null,
+      attio_import_attribute: config.attioImportAttribute || null,
     });
   });
 
@@ -255,6 +256,129 @@ export function createServer(): express.Express {
 
   app.post("/api/campaigns/:id/resume", (req, res) => {
     db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  // --- Lancer les envois pour une sélection de contacts ---
+  app.post("/api/campaigns/:id/launch-contacts", (req, res) => {
+    const { ids } = req.body as { ids?: number[] };
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ error: "ids[] est requis" });
+    }
+    const placeholders = ids.map(() => "?").join(",");
+    const launched = db.transaction(() => {
+      const { changes } = db
+        .prepare(
+          `UPDATE campaign_contacts SET status = 'pending' WHERE id IN (${placeholders}) AND campaign_id = ? AND status = 'held'`
+        )
+        .run(...ids, Number(req.params.id));
+      if (changes) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(req.params.id);
+      return changes;
+    })();
+    res.json({ ok: true, launched });
+  });
+
+  // --- Arrêter manuellement la séquence d'une sélection de contacts ---
+  app.post("/api/campaigns/:id/stop-contacts", (req, res) => {
+    const { ids } = req.body as { ids?: number[] };
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ error: "ids[] est requis" });
+    }
+    const placeholders = ids.map(() => "?").join(",");
+    const { changes } = db
+      .prepare(
+        `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
+         WHERE id IN (${placeholders}) AND campaign_id = ? AND status IN ('held', 'pending', 'in_progress')`
+      )
+      .run(...ids, Number(req.params.id));
+    res.json({ ok: true, stopped: changes });
+  });
+
+  // --- Changer manuellement le statut d'une sélection de contacts ---
+  app.post("/api/campaigns/:id/set-status", (req, res) => {
+    const { ids, status } = req.body as { ids?: number[]; status?: string };
+    const allowed = ["held", "pending", "in_progress", "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
+    if (!Array.isArray(ids) || !ids.length || !status || !allowed.includes(status)) {
+      return res.status(400).json({ error: "ids[] et un statut valide sont requis" });
+    }
+    const placeholders = ids.map(() => "?").join(",");
+    const changed = db.transaction(() => {
+      // next_send_at NULL : un contact remis en pending/in_progress est éligible
+      // dès le prochain tick ; les statuts terminaux n'ont pas d'envoi planifié.
+      // replied_at posé pour replied/opted_out (stats), effacé sinon pour que la
+      // détection de réponses reprenne sur un contact réactivé.
+      const { changes } = db
+        .prepare(
+          `UPDATE campaign_contacts SET status = ?, next_send_at = NULL, error = NULL,
+             replied_at = CASE WHEN ? IN ('replied', 'opted_out') THEN COALESCE(replied_at, ?) ELSE NULL END
+           WHERE id IN (${placeholders}) AND campaign_id = ?`
+        )
+        .run(status, status, Date.now(), ...ids, Number(req.params.id));
+      if (status === "opted_out") {
+        // Cohérence avec la détection automatique : désinscrit = plus jamais contacté
+        db.prepare(
+          `UPDATE contacts SET do_not_contact = 1
+           WHERE id IN (SELECT contact_id FROM campaign_contacts WHERE id IN (${placeholders}))`
+        ).run(...ids);
+      }
+      return changes;
+    })();
+    res.json({ ok: true, changed });
+  });
+
+  // --- Retirer une sélection de contacts de la campagne (le contact global est conservé) ---
+  app.post("/api/campaigns/:id/remove-contacts", (req, res) => {
+    const { ids } = req.body as { ids?: number[] };
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ error: "ids[] est requis" });
+    }
+    const placeholders = ids.map(() => "?").join(",");
+    const { changes } = db
+      .prepare(`DELETE FROM campaign_contacts WHERE id IN (${placeholders}) AND campaign_id = ?`)
+      .run(...ids, Number(req.params.id));
+    res.json({ ok: true, removed: changes });
+  });
+
+  // --- Mise à jour des champs d'un contact (standards + colonnes personnalisées) ---
+  app.patch("/api/contacts/:id", (req, res) => {
+    const contact = db.prepare("SELECT id, extra FROM contacts WHERE id = ?").get(req.params.id) as
+      | { id: number; extra: string | null }
+      | undefined;
+    if (!contact) return res.status(404).json({ error: "Contact introuvable" });
+    const { first_name, last_name, company, extra } = req.body as {
+      first_name?: string;
+      last_name?: string;
+      company?: string;
+      extra?: Record<string, string>;
+    };
+    // Les champs personnalisés sont fusionnés ; une valeur vide supprime le champ
+    let merged: Record<string, string> | null = null;
+    if (extra && typeof extra === "object") {
+      merged = { ...(contact.extra ? (JSON.parse(contact.extra) as Record<string, string>) : {}) };
+      for (const [k, v] of Object.entries(extra)) {
+        const key = k.trim();
+        if (!/^[\p{L}\p{N}_]+$/u.test(key)) {
+          return res.status(400).json({ error: `Nom de champ invalide : « ${k} » (lettres, chiffres et _ uniquement)` });
+        }
+        if (String(v).trim() === "") delete merged[key];
+        else merged[key] = String(v);
+      }
+    }
+    db.prepare(
+      `UPDATE contacts SET
+         first_name = COALESCE(?, first_name),
+         last_name  = COALESCE(?, last_name),
+         company    = COALESCE(?, company),
+         extra      = COALESCE(?, extra)
+       WHERE id = ?`
+    ).run(first_name ?? null, last_name ?? null, company ?? null, merged ? JSON.stringify(merged) : null, req.params.id);
+    res.json({ ok: true });
+  });
+
+  // --- Suppression d'une campagne (étapes, inscriptions et historique en cascade) ---
+  app.delete("/api/campaigns/:id", (req, res) => {
+    const { changes } = db.prepare("DELETE FROM campaigns WHERE id = ?").run(req.params.id);
+    if (!changes) return res.status(404).json({ error: "Campagne introuvable" });
     res.json({ ok: true });
   });
 
@@ -280,11 +404,12 @@ export function createServer(): express.Express {
       status_attribute?: string;
       statuses?: string[];
     };
-    if (!status_attribute || !statuses?.length) {
+    const attr = status_attribute || config.attioImportAttribute;
+    if (!attr || !statuses?.length) {
       return res.status(400).json({ error: "status_attribute et statuses[] sont requis" });
     }
     try {
-      res.json(await syncFromAttio(Number(req.params.id), status_attribute, statuses));
+      res.json(await syncFromAttio(Number(req.params.id), attr, statuses));
     } catch (err) {
       res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
     }
@@ -294,8 +419,8 @@ export function createServer(): express.Express {
   app.get("/api/campaigns/:id/contacts", (req, res) => {
     const rows = db
       .prepare(
-        `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name,
-                cc.status, cc.current_step, cc.variant, cc.account_id,
+        `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.extra,
+                cc.id AS cc_id, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
