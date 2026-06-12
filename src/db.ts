@@ -87,8 +87,46 @@ CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts (status, next_send_at
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_messages_cc ON messages (campaign_contact_id);
 
--- Moteur de recherche B2B interne : entreprises issues de l'API publique
--- Recherche d'Entreprises (data.gouv), enrichies localement (domaine, emails).
+-- Prospection : personnes trouvées par poste sur LinkedIn (via moteurs de
+-- recherche). Le slug du profil sert d'identité : un même profil n'est jamais
+-- inséré deux fois, quelles que soient les recherches qui le remontent.
+CREATE TABLE IF NOT EXISTS prospects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL,
+  role TEXT,                             -- poste affiché sur le profil
+  company TEXT,                          -- entreprise lue dans le résultat
+  location TEXT,                         -- localisation lue dans le résultat
+  linkedin TEXT NOT NULL,                -- URL du profil
+  linkedin_key TEXT NOT NULL UNIQUE,     -- slug normalisé (dédoublonnage)
+  email TEXT,
+  email_status TEXT NOT NULL DEFAULT 'pending', -- pending | verified | pattern | probable | not_found | no_domain
+  search_role TEXT,                      -- poste saisi lors de la recherche
+  search_id INTEGER,                     -- identifiant de la recherche (scope « recherche en cours »)
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE INDEX IF NOT EXISTS idx_prospects_search ON prospects (search_id);
+
+-- Cache des pages de résultats de l'API de recherche : une page déjà payée ne
+-- reconsomme jamais de crédit (les profils bougent peu d'un jour à l'autre).
+CREATE TABLE IF NOT EXISTS search_cache (
+  query TEXT NOT NULL,
+  page INTEGER NOT NULL,
+  results TEXT NOT NULL,                 -- JSON WebResult[]
+  fetched_at INTEGER NOT NULL,
+  PRIMARY KEY (query, page)
+);
+
+-- Une recherche (poste+localisation+secteur) garde le même identifiant d'un
+-- lancement à l'autre : ses prospects s'accumulent dans le même scope.
+CREATE TABLE IF NOT EXISTS searches (
+  key TEXT PRIMARY KEY,                  -- paramètres normalisés
+  search_id INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+-- Tables de l'ancien moteur entreprise (conservées pour les données existantes)
 CREATE TABLE IF NOT EXISTS b2b_companies (
   siren TEXT PRIMARY KEY,
   name TEXT NOT NULL,                    -- raison sociale (mise en forme lisible)

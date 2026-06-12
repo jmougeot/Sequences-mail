@@ -6,12 +6,21 @@
  * bascule au provider suivant si l'un échoue (quota épuisé, erreur réseau…).
  */
 import { config } from "../../config.js";
+import { db } from "../../db.js";
 
 export interface WebResult {
   url: string;
   title: string;
   snippet: string;
 }
+
+// Cache persistant des pages API : une page déjà payée ne reconsomme jamais de
+// crédit — relancer la même recherche rejoue le cache (gratuit, instantané) et
+// ne dépense qu'au-delà. TTL court : les profils bougent peu en quelques jours.
+const CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
+db.prepare("DELETE FROM search_cache WHERE fetched_at < ?").run(Date.now() - CACHE_TTL_MS);
+const cacheGet = db.prepare("SELECT results FROM search_cache WHERE query = ? AND page = ? AND fetched_at >= ?");
+const cachePut = db.prepare("INSERT OR REPLACE INTO search_cache (query, page, results, fetched_at) VALUES (?, ?, ?, ?)");
 
 export function hasSearchApi(): boolean {
   const s = config.search;
@@ -73,11 +82,16 @@ export async function apiSearch(query: string, page = 0): Promise<WebResult[] | 
   if (s.braveApiKey) providers.push({ name: "brave", run: () => braveSearch(query, page) });
   if (!providers.length) return null;
 
+  const hit = cacheGet.get(query, page, Date.now() - CACHE_TTL_MS) as { results: string } | undefined;
+  if (hit) return JSON.parse(hit.results) as WebResult[];
+
   let lastError: unknown = null;
   for (const p of providers) {
     if ((cooldownUntil.get(p.name) ?? 0) > Date.now()) continue;
     try {
-      return await p.run();
+      const results = await p.run();
+      cachePut.run(query, page, JSON.stringify(results), Date.now());
+      return results;
     } catch (err) {
       lastError = err;
       cooldownUntil.set(p.name, Date.now() + PROVIDER_COOLDOWN_MS);

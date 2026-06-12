@@ -9,154 +9,80 @@
 <body>
 <div class="wrap">
   <div class="inline" style="justify-content:space-between">
-    <h1 style="margin:0">Prospection B2B</h1>
+    <h1 style="margin:0">Prospection</h1>
     <span id="searchApiBadge"></span>
   </div>
   <p class="muted" style="margin-top:-8px">
-    Choisissez un secteur, une taille d'entreprise et une catégorie de personne, puis Rechercher.
-    Catégories « par fonction » (commerciaux, marketing…) : les profils LinkedIn correspondants sont
-    cherchés automatiquement pour chaque entreprise trouvée (nom, poste, URL du profil). Catégories
-    « dirigeants » : immédiat, depuis la base officielle. Export CSV ou ajout à une campagne.
+    Tapez le poste recherché et, si besoin, une localisation : les profils LinkedIn correspondants sont
+    cherchés en continu jusqu'à votre quota. Seules les personnes dont le poste correspond sont gardées
+    (nom, poste, entreprise, profil). Export CSV direct ; « Trouver les emails » pour l'ajout à une campagne.
   </p>
 
   <!-- Recherche -->
   <div class="card">
-    <h2>Rechercher des prospects</h2>
+    <h2>Rechercher des personnes</h2>
     <div class="row" style="align-items:flex-end">
       <div class="grow">
-        <label class="muted">Secteur</label>
-        <select id="fSection"><option value="">— Tous les secteurs —</option></select>
+        <label class="muted">Poste recherché</label>
+        <input id="fPoste" placeholder="ex. account executive, directeur marketing, commercial…">
       </div>
-      <div style="flex:0 0 190px">
-        <label class="muted">Taille d'entreprise</label>
-        <select id="fEff">
-          <option value="">Toutes tailles</option>
-          <option value="01,02,03">1 à 9 salariés</option>
-          <option value="11,12">10 à 49 salariés</option>
-          <option value="21,22,31">50 à 249 salariés</option>
-          <option value="32,41">250 à 999 salariés</option>
-          <option value="42,51,52,53">1 000 salariés et +</option>
-        </select>
+      <div class="grow">
+        <label class="muted">Localisation (villes, régions — optionnel)</label>
+        <input id="fLoc" placeholder="ex. Paris, Lyon">
       </div>
-      <div style="flex:0 0 210px">
-        <label class="muted">Catégorie de personne</label>
-        <select id="fPersonne">
-          <option value="">Toutes les personnes</option>
-          <optgroup label="Par fonction (recherche LinkedIn, synonymes inclus)">
-            <option value="li:commercial">Commercial · sales · business dev · account</option>
-            <option value="li:marketing">Marketing · growth · communication</option>
-            <option value="li:RH recrutement">RH · recrutement · talent</option>
-            <option value="li:CTO tech">Tech · CTO · développeur · engineer</option>
-          </optgroup>
-          <optgroup label="Dirigeants (base officielle)">
-            <option value="président,ceo">Président / CEO</option>
-            <option value="directeur général">Directeur général</option>
-            <option value="gérant">Gérant(e)</option>
-            <option value="directeur">Directeur (tous)</option>
-          </optgroup>
-        </select>
+      <div class="grow">
+        <label class="muted">Secteur / mots-clés (optionnel)</label>
+        <input id="fSecteur" placeholder="ex. immobilier, SaaS, agence…">
+      </div>
+      <div style="flex:0 0 110px">
+        <label class="muted">Prospects voulus</label>
+        <input id="fTarget" type="number" value="100" min="5" max="1000">
       </div>
       <div style="flex:0 0 auto">
-        <button onclick="search(1)" id="searchBtn">Rechercher</button>
+        <button onclick="search(false)" id="searchBtn">Rechercher</button>
       </div>
     </div>
-    <details style="margin-top:10px">
-      <summary class="muted" style="cursor:pointer">Plus de filtres (mots-clés, NAF précis, localisation, chiffre d'affaires)</summary>
-      <div class="row" style="margin-top:8px">
-        <div class="grow">
-          <label class="muted">Mots-clés (nom, activité…)</label>
-          <input id="fQ" placeholder="ex. agence immobilière, logiciel RH…">
-        </div>
-        <div style="flex:0 0 140px">
-          <label class="muted">Code NAF précis</label>
-          <input id="fNaf" placeholder="ex. 62.01Z">
-        </div>
-        <div style="flex:0 0 160px">
-          <label class="muted">Départements</label>
-          <input id="fDeps" placeholder="ex. 75,92,69">
-        </div>
-        <div style="flex:0 0 130px">
-          <label class="muted">Code postal</label>
-          <input id="fCp" placeholder="ex. 33000">
-        </div>
-        <div style="flex:0 0 150px">
-          <label class="muted">CA min (€)</label>
-          <input id="fCaMin" type="number" placeholder="ex. 500000">
-        </div>
-        <div style="flex:0 0 150px">
-          <label class="muted">CA max (€)</label>
-          <input id="fCaMax" type="number" placeholder="">
-        </div>
-      </div>
-    </details>
-  </div>
-
-  <!-- Résultats entreprises -->
-  <div class="card" id="resultsCard" hidden>
-    <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <h2 style="margin:0" id="resultsTitle">Entreprises</h2>
-      <div class="inline">
-        <span class="muted">Enrichir :</span>
-        <label class="muted" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-          <input type="checkbox" id="optLinkedin" checked> LinkedIn</label>
-        <label class="muted" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-          <input type="checkbox" id="optEmails"> Emails</label>
-        <button onclick="enrichSelection()" id="enrichBtn">Enrichir la sélection</button>
-      </div>
-    </div>
-    <div id="enrichProgress" hidden style="margin:10px 0">
-      <div class="bar"><div id="enrichBar" style="width:0%"></div></div>
-      <span class="muted" id="enrichLabel"></span>
-    </div>
-    <table style="margin-top:10px">
-      <thead><tr>
-        <th style="width:28px"><input type="checkbox" id="ckAllComp" onchange="toggleAll('comp', this.checked)"></th>
-        <th>Entreprise</th><th>Secteur</th><th>Effectif</th><th>Ville</th><th>Dirigeants</th><th>Domaine</th><th>Emails</th>
-      </tr></thead>
-      <tbody id="compRows"></tbody>
-    </table>
-    <p><button class="ghost" id="moreBtn" onclick="search(state.page + 1)" hidden>Charger plus</button></p>
   </div>
 
   <!-- Prospects -->
   <div class="card" id="leadsCard">
     <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px">
       <h2 style="margin:0">Prospects</h2>
-      <div class="inline" style="flex-wrap:wrap">
-        <select id="lScope" style="width:170px" onchange="loadLeads()">
-          <option value="search">Recherche en cours</option>
-          <option value="all">Tous les prospects</option>
-        </select>
-        <input id="lRole" placeholder="Poste contient… (ex. président,gérant)" style="width:210px" onchange="loadLeads()">
-        <select id="lStatus" style="width:190px" onchange="loadLeads()">
-          <option value="">Tous</option>
-          <option value="__source">Trouvés par fonction (LinkedIn)</option>
-          <option value="__linkedin">Avec LinkedIn</option>
-          <option value="verified,pattern,probable,generic">Avec email</option>
-          <option value="verified,pattern">Email vérifié / pattern</option>
-          <option value="verified">Email vérifié seulement</option>
-        </select>
-        <input id="lQ" placeholder="Filtrer (nom, entreprise…)" style="width:180px" onchange="loadLeads()">
-      </div>
+      <button class="ghost" id="emailBtn" onclick="findEmails()"
+        title="Pour la sélection (ou tout le tableau filtré) : site de l'entreprise → pattern d'adresses → un email par prospect, vérifié quand c'est possible">Trouver les emails</button>
+    </div>
+    <div id="jobProgress" hidden style="margin:10px 0">
+      <div class="bar"><div id="jobBar" style="width:0%"></div></div>
+      <span class="muted" id="jobLabel"></span>
+    </div>
+    <div class="inline" style="flex-wrap:wrap;margin-top:8px">
+      <select id="lScope" style="width:180px" onchange="loadProspects()">
+        <option value="search">Recherche en cours</option>
+        <option value="all">Tous les prospects</option>
+      </select>
+      <input id="lRole" placeholder="Poste contient… (ex. directeur)" style="width:210px" onchange="loadProspects()">
+      <input id="lQ" placeholder="Filtrer (nom, entreprise, ville…)" style="width:210px" onchange="loadProspects()">
+      <label class="muted" style="display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="lEmail" onchange="loadProspects()" style="width:auto"> avec email
+      </label>
     </div>
     <table style="margin-top:10px">
       <thead><tr>
-        <th style="width:28px"><input type="checkbox" id="ckAllLeads" onchange="toggleAll('lead', this.checked)"></th>
-        <th>Contact</th><th>Poste</th><th>LinkedIn</th><th>Email</th><th>Fiabilité</th><th>Entreprise</th><th>Ville</th>
+        <th style="width:28px"><input type="checkbox" id="ckAll" onchange="toggleAll(this.checked)"></th>
+        <th>Contact</th><th>Poste</th><th>Entreprise</th><th>Localisation</th><th>LinkedIn</th><th>Email</th>
       </tr></thead>
-      <tbody id="leadRows"></tbody>
+      <tbody id="rows"></tbody>
     </table>
+    <p><button class="ghost" id="moreBtn" onclick="search(true)" hidden>Chercher plus de prospects</button></p>
     <div class="inline" style="margin-top:12px;flex-wrap:wrap">
-      <span class="muted" id="leadCount"></span>
+      <span class="muted" id="count"></span>
       <span style="flex:1"></span>
       <button class="ghost" onclick="exportCsv()">⬇ Exporter en CSV</button>
       <select id="exportCampaign" style="width:240px"><option value="">— Choisir une campagne —</option></select>
-      <button onclick="exportLeads()">Ajouter à la campagne</button>
+      <button onclick="exportToCampaign()">Ajouter à la campagne</button>
     </div>
-    <p class="muted">Sélection vide = tout le tableau filtré. L'export CSV inclut LinkedIn même sans email ;
-      l'ajout à une campagne ne prend que les prospects avec email (statut « non lancé », comme un import CSV).
-      Astuce : après une recherche de commerciaux, lancez « Enrichir » avec Emails coché — leurs adresses
-      sont déduites du pattern du site comme pour les dirigeants.</p>
+    <p class="muted">Sélection vide = tout le tableau filtré. L'export CSV inclut toujours le LinkedIn ;
+      l'ajout à une campagne ne prend que les prospects avec email — cliquez d'abord « Trouver les emails ».</p>
   </div>
 </div>
 
@@ -164,64 +90,60 @@
 <script>
 renderNav("leads.html");
 
-const LEAD_STATUS = {
-  pending: ["non enrichi", "held"],
+const EMAIL_STATUS = {
   verified: ["vérifié", "replied"],
   pattern: ["pattern du site", "in_progress"],
   probable: ["probable", "paused"],
-  generic: ["générique", "held"],
   not_found: ["introuvable", "failed"],
   no_domain: ["sans domaine", "failed"],
 };
-const state = { page: 1, companies: [], refs: { sections: {}, effectifs: {} }, total: 0 };
+const state = { jobRunning: false, hasSearch: false };
 
 async function init() {
-  state.refs = await api("/api/b2b/referentiels");
-  $("#fSection").innerHTML += Object.entries(state.refs.sections)
-    .map(([k, v]) => `<option value="${k}">${k} — ${esc(v)}</option>`).join("");
-  $("#searchApiBadge").innerHTML = state.refs.search_api
+  const meta = await api("/api/b2b/meta");
+  $("#searchApiBadge").innerHTML = meta.search_api
     ? '<span class="pill replied" title="Une API de recherche est configurée dans .env">API de recherche active</span>'
-    : '<span class="pill held" title="Aucune clé d\'API : recherche via moteurs publics (gratuit, moins fiable). Voir .env.example">moteurs publics</span>';
+    : '<span class="pill held" title="Aucune clé d\'API de recherche : profils cherchés via moteurs publics, résultats limités. Une clé gratuite (Serper recommandé) fiabilise et multiplie les résultats — voir .env.example">moteurs publics — résultats limités</span>';
   const campaigns = await api("/api/campaigns");
   $("#exportCampaign").innerHTML += campaigns
     .map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  loadLeads();
+  // un job tournait déjà (page rechargée) : on raccroche le suivi
+  const s = await api("/api/b2b/status").catch(() => null);
+  if (s) {
+    state.hasSearch = Boolean(s.search_id);
+    updateMoreBtn(s);
+    if (s.running) trackJob(s.mode);
+  }
+  loadProspects();
 }
 
-function effLabel(code) { return code ? (state.refs.effectifs[code] || code) : "—"; }
+function targetValue() {
+  return Math.min(Math.max(+$("#fTarget").value || 100, 5), 1000);
+}
 
-async function search(page) {
-  const params = new URLSearchParams();
-  for (const [k, v] of [
-    ["q", $("#fQ").value], ["section", $("#fSection").value], ["naf", $("#fNaf").value],
-    ["effectifs", $("#fEff").value], ["departements", $("#fDeps").value], ["code_postal", $("#fCp").value],
-    ["ca_min", $("#fCaMin").value], ["ca_max", $("#fCaMax").value],
-  ]) if (v && String(v).trim()) params.set(k, String(v).trim());
-  params.set("page", page);
-  // la catégorie de personne choisie filtre directement la liste de prospects ;
-  // les catégories "li:" (fonction via LinkedIn) déclenchent une recherche de personnes
-  const personne = $("#fPersonne").value;
-  if (page === 1) {
-    $("#lRole").value = personne.startsWith("li:") ? "" : personne;
-    $("#lStatus").value = personne.startsWith("li:") ? "__source" : "";
+async function search(more) {
+  const body = {
+    poste: $("#fPoste").value.trim() || undefined,
+    localisation: $("#fLoc").value.trim() || undefined,
+    secteur: $("#fSecteur").value.trim() || undefined,
+    target: targetValue(),
+    continue: more,
+  };
+  if (!more) {
+    $("#lScope").value = "search";
+    $("#lRole").value = "";
+    $("#lQ").value = "";
+    $("#lEmail").checked = false;
   }
   $("#searchBtn").disabled = true;
   try {
-    const r = await api("/api/b2b/search?" + params);
-    state.page = r.page;
-    state.total = r.total;
-    state.companies = page === 1 ? r.companies : state.companies.concat(r.companies);
-    $("#resultsCard").hidden = false;
-    $("#resultsTitle").textContent = `${r.total.toLocaleString("fr-FR")} entreprise(s) — ${state.companies.length} affichée(s)`;
-    $("#moreBtn").hidden = r.page >= r.total_pages;
-    renderCompanies();
-    loadLeads(); // les dirigeants apparaissent immédiatement comme prospects
-    // catégorie par fonction : on cherche ces personnes sur LinkedIn pour les
-    // entreprises de la page (les suivantes via « Charger plus » + bouton Enrichir)
-    if (personne.startsWith("li:")) {
-      const pageSirens = r.companies.map((c) => c.siren);
-      runEnrichJob({ sirens: pageSirens, people: personne.slice(3), linkedin: false, emails: false });
-    }
+    await api("/api/b2b/prospect", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    state.hasSearch = true;
+    $("#moreBtn").hidden = true;
+    loadProspects();
+    trackJob("prospect");
   } catch (e) {
     notify(e.message, false);
   } finally {
@@ -229,173 +151,123 @@ async function search(page) {
   }
 }
 
-function dirSummary(dirigeants) {
-  if (!dirigeants.length) return '<span class="muted">—</span>';
-  const txt = dirigeants.slice(0, 3)
-    .map((d) => `${esc(d.first_name[0])}. ${esc(d.last_name)} <span class="muted">(${esc(d.role)})</span>`)
-    .join("<br>");
-  return txt + (dirigeants.length > 3 ? `<br><span class="muted">+${dirigeants.length - 3} autres</span>` : "");
+function findEmails() {
+  const ids = $$(".ck:checked").map((c) => +c.value);
+  const scope = ids.length ? ids : prospects.filter((p) => !p.email).map((p) => p.id);
+  if (!scope.length) return notify("Aucun prospect sans email dans le tableau.", false);
+  api("/api/b2b/emails", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids: scope }),
+  })
+    .then(() => trackJob("emails"))
+    .catch((e) => notify(e.message, false));
 }
 
-function renderCompanies() {
-  $("#compRows").innerHTML = state.companies.map((c) => `
-    <tr>
-      <td><input type="checkbox" class="ck-comp" value="${c.siren}"></td>
-      <td><b>${esc(c.name)}</b>${c.brand && c.brand !== c.name ? `<div class="muted">${esc(c.brand)}</div>` : ""}
-          <div class="muted">SIREN ${c.siren}</div></td>
-      <td>${esc(c.naf || "—")}<div class="muted">${esc(state.refs.sections[c.naf_section] || "")}</div></td>
-      <td>${esc(effLabel(c.effectif))}</td>
-      <td>${esc(c.ville || "—")}</td>
-      <td>${dirSummary(c.dirigeants)}</td>
-      <td><a href="#" onclick="editDomain('${c.siren}'); return false" title="Cliquer pour corriger">
-        ${c.domain ? esc(c.domain) : '<span class="muted">' + (c.enriched_at ? "introuvable ✎" : "à enrichir ✎") + "</span>"}</a></td>
-      <td>${c.enriched_at ? (c.emails_found || 0) + " 📧" : '<span class="muted">—</span>'}</td>
-    </tr>`).join("") || '<tr><td colspan="8" class="muted">Aucun résultat.</td></tr>';
+function setJobRunning(running) {
+  state.jobRunning = running;
+  $("#searchBtn").disabled = running;
+  $("#emailBtn").disabled = running;
+  $("#moreBtn").disabled = running;
 }
 
-function toggleAll(kind, checked) {
-  $$(".ck-" + kind).forEach((c) => (c.checked = checked));
+function updateMoreBtn(s) {
+  const more = !s.running && state.hasSearch && s.has_more;
+  $("#moreBtn").hidden = !more;
+  if (more) $("#moreBtn").textContent = `Chercher ${targetValue()} prospect(s) de plus`;
 }
 
-async function editDomain(siren) {
-  const c = state.companies.find((x) => x.siren === siren) || {};
-  const domain = prompt(`Domaine email de ${c.name || siren} (ex. acme.fr) :`, c.domain || "");
-  if (domain === null) return;
-  const r = await api(`/api/b2b/companies/${siren}`, {
-    method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ domain }),
-  }).catch((e) => notify(e.message, false));
-  if (!r) return;
-  c.domain = r.domain; c.enriched_at = null; c.emails_found = 0;
-  renderCompanies();
-  notify("Domaine mis à jour — relancez l'enrichissement pour générer les emails.");
-}
-
-async function enrichSelection() {
-  let sirens = $$(".ck-comp:checked").map((c) => c.value);
-  if (!sirens.length) sirens = state.companies.map((c) => c.siren); // rien de coché = tout
-  if (!sirens.length) return notify("Lancez d'abord une recherche.", false);
-  const personne = $("#fPersonne").value;
-  const body = {
-    sirens,
-    linkedin: $("#optLinkedin").checked,
-    emails: $("#optEmails").checked,
-    // catégorie par fonction sélectionnée : le bouton relance aussi cette recherche
-    people: personne.startsWith("li:") ? personne.slice(3) : undefined,
-  };
-  if (!body.linkedin && !body.emails && !body.people) return notify("Cochez au moins LinkedIn ou Emails.", false);
-  runEnrichJob(body);
-}
-
-/* Lance un job d'enrichissement et suit sa progression (prospects rafraîchis en direct). */
-async function runEnrichJob(body) {
-  try {
-    await api("/api/b2b/enrich", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-    });
-  } catch (e) {
-    return notify(e.message, false);
-  }
-  $("#enrichBtn").disabled = true;
-  $("#enrichProgress").hidden = false;
+/* Suit le job en cours : barre, libellé, prospects affichés au fil de l'eau. */
+function trackJob(mode) {
+  setJobRunning(true);
+  $("#jobProgress").hidden = false;
   let lastFound = -1;
   const poll = setInterval(async () => {
-    const s = await api("/api/b2b/enrich/status").catch(() => null);
+    const s = await api("/api/b2b/status").catch(() => null);
     if (!s) return;
-    const found = [
-      body.people ? `${s.people_found} profil(s) trouvé(s)` : "",
-      body.linkedin ? `${s.linkedin_found} LinkedIn` : "",
-      body.emails ? `${s.emails_found} email(s)` : "",
-    ].filter(Boolean).join(" · ");
-    $("#enrichBar").style.width = s.total ? Math.round((s.done / s.total) * 100) + "%" : "0%";
-    $("#enrichLabel").textContent = `${s.done}/${s.total}` + (s.current ? ` — ${s.current}` : "") + ` · ${found}`;
-    // les prospects apparaissent au fil de l'eau
-    const total = s.people_found + s.linkedin_found + s.emails_found;
-    if (total !== lastFound) { lastFound = total; loadLeads(); }
+    let pct, label;
+    if (mode === "prospect") {
+      pct = s.target ? Math.min(100, Math.round((s.found / s.target) * 100)) : 0;
+      label = `${s.found}/${s.target} prospect(s) · ${s.done} requête(s)` + (s.current ? ` — ${s.current}` : "");
+    } else {
+      pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+      label = `${s.done}/${s.total} entreprise(s) · ${s.found} email(s)` + (s.current ? ` — ${s.current}` : "");
+    }
+    $("#jobBar").style.width = pct + "%";
+    $("#jobLabel").textContent = label;
+    if (s.found !== lastFound) { lastFound = s.found; loadProspects(); }
     if (!s.running) {
       clearInterval(poll);
-      $("#enrichBtn").disabled = false;
-      setTimeout(() => ($("#enrichProgress").hidden = true), 4000);
+      setJobRunning(false);
+      state.hasSearch = Boolean(s.search_id);
+      updateMoreBtn(s);
+      setTimeout(() => ($("#jobProgress").hidden = true), 5000);
       if (s.errors.length) notify(`Terminé avec ${s.errors.length} erreur(s) : ${s.errors[0]}`, false);
-      else notify(`Terminé : ${found}.`);
-      await loadLeads();
-      refreshCompaniesFromLeads(new Set(body.sirens), Boolean(body.emails));
+      else if (mode === "prospect") notify(`Recherche terminée : ${s.found} prospect(s).`);
+      else notify(`Emails : ${s.found} adresse(s) trouvée(s).`);
+      loadProspects();
     }
   }, 1500);
 }
 
-let leads = [];
-function leadParams() {
+let prospects = [];
+function prospectParams() {
   const params = new URLSearchParams();
-  // « Recherche en cours » : prospects des entreprises affichées ; sans recherche, tout montrer
-  if ($("#lScope").value === "search" && state.companies.length) {
-    params.set("sirens", state.companies.map((c) => c.siren).join(","));
-  }
+  if ($("#lScope").value === "search") params.set("scope", "search");
   if ($("#lRole").value.trim()) params.set("role", $("#lRole").value.trim());
-  const st = $("#lStatus").value;
-  if (st === "__linkedin") params.set("linkedin", "1");
-  else if (st === "__source") params.set("source", "linkedin");
-  else if (st) params.set("status", st);
   if ($("#lQ").value.trim()) params.set("q", $("#lQ").value.trim());
+  if ($("#lEmail").checked) params.set("email", "1");
   return params;
 }
 
-async function loadLeads() {
-  leads = await api("/api/b2b/leads?" + leadParams());
-  $("#leadRows").innerHTML = leads.map((l) => {
-    const [label, cls] = LEAD_STATUS[l.email_status] || [l.email_status, "held"];
-    const name = [l.first_name, l.last_name].filter(Boolean).join(" ") || "—";
+async function loadProspects() {
+  prospects = await api("/api/b2b/prospects?" + prospectParams());
+  const emptyMsg = state.jobRunning
+    ? "Recherche en cours… les prospects apparaissent ici au fur et à mesure."
+    : ($("#lScope").value === "search" && !state.hasSearch
+      ? "Aucune recherche — lancez-en une ci-dessus, ou passez sur « Tous les prospects »."
+      : "Aucun prospect.");
+  $("#rows").innerHTML = prospects.map((p) => {
+    const [label, cls] = EMAIL_STATUS[p.email_status] || [];
     return `<tr>
-      <td><input type="checkbox" class="ck-lead" value="${l.id}"></td>
-      <td><b>${esc(name)}</b>${l.in_contacts ? ' <span class="muted" title="déjà dans vos contacts">✓ importé</span>' : ""}</td>
-      <td>${esc(l.role || "—")}</td>
-      <td>${l.linkedin ? `<a href="${esc(l.linkedin)}" target="_blank" rel="noopener">Profil ↗</a>` : '<span class="muted">—</span>'}</td>
-      <td>${l.email ? esc(l.email) : '<span class="muted">—</span>'}</td>
-      <td>${l.email || l.email_status !== "pending" ? `<span class="pill ${cls}">${esc(label)}</span>` : '<span class="muted">—</span>'}</td>
-      <td>${esc(l.company)}</td>
-      <td>${esc(l.ville || "—")}</td>
+      <td><input type="checkbox" class="ck" value="${p.id}"></td>
+      <td><b>${esc(p.first_name)} ${esc(p.last_name)}</b>${p.in_contacts ? ' <span class="muted" title="déjà dans vos contacts">✓ importé</span>' : ""}</td>
+      <td>${esc(p.role || "—")}</td>
+      <td>${esc(p.company || "—")}</td>
+      <td>${esc(p.location || "—")}</td>
+      <td><a href="${esc(p.linkedin)}" target="_blank" rel="noopener">Profil ↗</a></td>
+      <td>${p.email ? esc(p.email) + (label ? ` <span class="pill ${cls}">${esc(label)}</span>` : "")
+        : (label ? `<span class="pill ${cls}">${esc(label)}</span>` : '<span class="muted">—</span>')}</td>
     </tr>`;
-  }).join("") || '<tr><td colspan="8" class="muted">Aucun prospect — lancez une recherche d\'entreprises ci-dessus.</td></tr>';
-  $("#leadCount").textContent = leads.length
-    ? `${leads.length} prospect(s) · ${leads.filter((l) => l.linkedin).length} avec LinkedIn · ${leads.filter((l) => l.email).length} avec email`
+  }).join("") || `<tr><td colspan="7" class="muted">${emptyMsg}</td></tr>`;
+  $("#count").textContent = prospects.length
+    ? `${prospects.length} prospect(s) · ${prospects.filter((p) => p.email).length} avec email`
     : "";
 }
 
+function toggleAll(checked) {
+  $$(".ck").forEach((c) => (c.checked = checked));
+}
+
 function exportCsv() {
-  const params = leadParams();
-  const ids = $$(".ck-lead:checked").map((c) => c.value);
+  const params = prospectParams();
+  const ids = $$(".ck:checked").map((c) => c.value);
   if (ids.length) params.set("ids", ids.join(","));
-  if (!ids.length && !leads.length) return notify("Rien à exporter.", false);
-  window.location.href = "/api/b2b/leads.csv?" + params;
+  if (!ids.length && !prospects.length) return notify("Rien à exporter.", false);
+  window.location.href = "/api/b2b/prospects.csv?" + params;
 }
 
-/* Met à jour les colonnes Domaine/Emails des entreprises qui viennent d'être enrichies */
-function refreshCompaniesFromLeads(sirens, emailsMode) {
-  const bySiren = {};
-  for (const l of leads) {
-    bySiren[l.siren] = bySiren[l.siren] || { domain: l.domain, count: 0 };
-    if (l.email) bySiren[l.siren].count++;
-  }
-  for (const c of state.companies) {
-    if (!sirens.has(c.siren) || !bySiren[c.siren]) continue;
-    c.domain = bySiren[c.siren].domain;
-    c.emails_found = bySiren[c.siren].count;
-    if (emailsMode) c.enriched_at = Date.now();
-  }
-  renderCompanies();
-}
-
-async function exportLeads() {
-  const ids = $$(".ck-lead:checked").map((c) => +c.value);
+async function exportToCampaign() {
   const campaignId = +$("#exportCampaign").value;
   if (!campaignId) return notify("Choisissez une campagne.", false);
-  if (!ids.length) return notify("Cochez au moins un lead avec email.", false);
+  const checked = $$(".ck:checked").map((c) => +c.value);
+  const ids = checked.length ? checked : prospects.filter((p) => p.email).map((p) => p.id);
+  if (!ids.length) return notify("Aucun prospect avec email — cliquez d'abord « Trouver les emails ».", false);
   try {
     const r = await api("/api/b2b/export", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ campaign_id: campaignId, lead_ids: ids }),
+      body: JSON.stringify({ campaign_id: campaignId, ids }),
     });
     notify(`Ajoutés : ${r.imported} · déjà inscrits : ${r.updated} · ignorés : ${r.skipped}`);
-    loadLeads();
+    loadProspects();
   } catch (e) {
     notify(e.message, false);
   }

@@ -8,6 +8,24 @@
  */
 import { resolveMx, resolve4 } from "node:dns/promises";
 
+// Particules en minuscules au milieu d'un nom (Neuilly-sur-Seine, Massiet du Biest)
+const PARTICLES = new Set(["de", "du", "des", "le", "la", "les", "et", "en", "au", "aux", "sur", "sous", "lès", "and", "of", "the", "à"]);
+
+/** Mise en forme lisible d'un nom en capitales ("SERENSIA" → "Serensia", sigles sans voyelle conservés). */
+export function titleCase(s: string): string {
+  let first = true;
+  return s
+    .toLowerCase()
+    .replace(/[\p{L}\p{N}]+/gu, (w) => {
+      const isFirst = first;
+      first = false;
+      if (!isFirst && PARTICLES.has(w)) return w;
+      if (w.length <= 3 && !/[aeiouyàâéèêëîïôûù]/.test(w)) return w.toUpperCase(); // sigle probable (GTD, BNP)
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .trim();
+}
+
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
@@ -31,6 +49,21 @@ const DIRECTORY_DOMAINS = [
 
 export function deaccent(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+/** D\u00e9code les entit\u00e9s HTML courantes (deux passes : certains sites double-encodent). */
+export function decodeEntities(s: string): string {
+  for (let i = 0; i < 2; i++) {
+    s = s
+      .replace(/&#x([0-9a-f]+);/gi, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+      .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(parseInt(d, 10)))
+      .replace(/&eacute;/gi, "\u00e9").replace(/&egrave;/gi, "\u00e8").replace(/&ecirc;/gi, "\u00ea")
+      .replace(/&agrave;/gi, "\u00e0").replace(/&ccedil;/gi, "\u00e7").replace(/&ocirc;/gi, "\u00f4")
+      .replace(/&icirc;/gi, "\u00ee").replace(/&ucirc;/gi, "\u00fb").replace(/&euml;/gi, "\u00eb")
+      .replace(/&nbsp;/gi, " ").replace(/&quot;/g, '"').replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  }
+  return s;
 }
 
 /** Nom normalis\u00e9 pour comparer des personnes : minuscules, sans accents ni s\u00e9parateurs. */
@@ -163,14 +196,89 @@ export async function findDomain(company: { name: string; brand: string | null; 
 }
 
 const EMAIL_RE = /[a-z0-9][a-z0-9._%+-]*@[a-z0-9][a-z0-9.-]+\.[a-z]{2,}/gi;
-// pages internes intéressantes pour trouver des emails
+// pages internes intéressantes pour trouver des emails et l'équipe
 const CRAWL_LINK_RE = /(contact|mention|legal|equipe|team|about|propos|qui-sommes)/i;
+// parmi elles, celles qui listent généralement les personnes (crawlées en priorité)
+const TEAM_LINK_RE = /(equipe|team|qui-sommes|about|propos)/i;
+
+// --- Extraction des personnes publiées sur le site (pages équipe) ---------
+
+export interface TeamPerson {
+  first_name: string;
+  last_name: string;
+  role: string; // poste tel qu'affiché sur le site
+}
+
+// Un segment de texte n'est retenu comme poste que s'il contient un mot de métier
+export const JOB_WORD_RE = /directeur|directrice|director|direction|responsable|manager|chef[fe]?s?\b|head of|\blead\b|pr[ée]sident|fondat|founder|g[ée]rant|associ[ée]|partner|\bc[eotfm]o\b|\bdg\b|\bdaf\b|\bdrh\b|commercial|sales|account|business|d[ée]veloppeu|developer|ing[ée]nieur|engineer|consultant|marketing|communication|growth|finance|comptab|juriste|avocat|\brh\b|ressources humaines|\bhr\b|recrut|talent|assistant|charg[ée]e?\b|technicien|designer|product|achats?\b|support|customer|office manager|expert|analyste?\b|architecte|coach|formateur|conseiller/i;
+
+// Mots qui disqualifient un segment comme nom de personne
+const NOT_A_NAME_RE = new RegExp(
+  `\\d|@|©|[ée]quipe|\\bteam\\b|notre|\\bnos\\b|contact|cookie|mention|politique|newsletter|suivez|d[ée]couvr|bienvenue|${JOB_WORD_RE.source}`,
+  "i"
+);
+
+const MIXED_CASE_WORD = /^[\p{Lu}][\p{Ll}'’-]+$/u; // Xxxx (lettres, apostrophes, tirets)
+const NAME_WORD = /^[\p{Lu}][\p{L}'’-]+$/u; // Xxxx ou XXXX
+const NAME_PARTICLES = new Set(["de", "du", "des", "le", "la", "van", "von", "el", "al", "ben", "di", "da"]);
+
+/** Le segment ressemble-t-il à un nom de personne (« Marie Dupont », « Jean de La Tour ») ? */
+function looksLikeName(seg: string): boolean {
+  if (seg.length > 40 || NOT_A_NAME_RE.test(seg)) return false;
+  const words = seg.split(/\s+/);
+  if (words.length < 2 || words.length > 4) return false;
+  let mixed = 0;
+  for (const w of words) {
+    if (NAME_PARTICLES.has(w.toLowerCase())) continue;
+    if (!NAME_WORD.test(w)) return false;
+    if (MIXED_CASE_WORD.test(w)) mixed++;
+  }
+  // au moins un mot en casse mixte : écarte les intitulés tout en capitales
+  return mixed >= 1;
+}
+
+/**
+ * Extrait les personnes (nom + poste) publiées sur une page « équipe » : un
+ * segment de texte qui ressemble à un nom, suivi de près par un segment qui
+ * ressemble à un poste. Heuristique volontairement stricte : mieux vaut rater
+ * un profil que de fabriquer un faux prospect.
+ */
+export function extractTeamPeople(html: string): TeamPerson[] {
+  const segs = html
+    .replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    // les balises de mise en forme ne coupent pas un nom ("Jean <b>Dupont</b>")
+    .replace(/<\/?(strong|em|b|i|u|span|a|small|sup|sub|abbr|mark)[^>]*>/gi, "")
+    .split(/<[^>]+>/)
+    .map((s) => decodeEntities(s).replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const people: TeamPerson[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < segs.length && people.length < 40; i++) {
+    if (!looksLikeName(segs[i])) continue;
+    // le poste est l'un des 2 segments suivants (carte d'équipe : nom puis fonction)
+    const role = [segs[i + 1], segs[i + 2]].find(
+      (s) => s && s.length >= 3 && s.length <= 80 && JOB_WORD_RE.test(s) && !looksLikeName(s)
+    );
+    if (!role) continue;
+    const words = segs[i].split(/\s+/);
+    const first = titleCase(words[0]);
+    const last = titleCase(words.slice(1).join(" "));
+    const key = normName(first + last);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    people.push({ first_name: first, last_name: last, role });
+  }
+  return people;
+}
 
 export interface CrawlResult {
   emails: string[]; // emails @domaine trouvés sur le site (dédupliqués, minuscules)
+  people: TeamPerson[]; // personnes publiées sur les pages équipe/à propos
 }
 
-/** Crawl léger : accueil + 3 pages internes max (contact, mentions légales…). */
+/** Crawl léger : accueil + 4 pages internes max (équipe et à-propos d'abord, puis contact…). */
 export async function crawlEmails(domain: string, homepage?: string): Promise<CrawlResult> {
   const found = new Set<string>();
   const home = await fetchPage(homepage ?? `https://${domain}`);
@@ -188,7 +296,8 @@ export async function crawlEmails(domain: string, homepage?: string): Promise<Cr
         /* href invalide */
       }
     }
-    for (const link of [...links].slice(0, 3)) {
+    const ordered = [...links].sort((a, b) => Number(TEAM_LINK_RE.test(b)) - Number(TEAM_LINK_RE.test(a)));
+    for (const link of ordered.slice(0, 4)) {
       const p = await fetchPage(link);
       if (p) pages.push(p.html);
     }
@@ -209,5 +318,16 @@ export async function crawlEmails(domain: string, homepage?: string): Promise<Cr
       }
     }
   }
-  return { emails: [...found] };
+  // personnes publiées sur les pages crawlées (équipe, à propos…), dédupliquées
+  const people: TeamPerson[] = [];
+  const seenPeople = new Set<string>();
+  for (const html of pages) {
+    for (const p of extractTeamPeople(html)) {
+      const key = normName(p.first_name + p.last_name);
+      if (seenPeople.has(key)) continue;
+      seenPeople.add(key);
+      people.push(p);
+    }
+  }
+  return { emails: [...found], people };
 }

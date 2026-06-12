@@ -1,47 +1,201 @@
 /**
- * Enrichissement d'entreprises sélectionnées, au choix :
- * - LinkedIn : profil de chaque dirigeant via les moteurs de recherche ;
- * - Emails : domaine → crawl du site → pattern → email par dirigeant
- *   (vérifié SMTP si possible).
- * Un seul job à la fois, suivi via jobStatus() (pollé par l'UI).
+ * Jobs de prospection, un seul à la fois (suivi via jobStatus(), pollé par l'UI) :
+ * - 'prospect' : recherche directe de personnes par poste — file de requêtes
+ *   (terme × localisation × page) déroulée jusqu'au quota de prospects, chaque
+ *   profil inséré au fil de l'eau (dédoublonné par slug LinkedIn) ;
+ * - 'emails' : pour l'export campagne — devine le domaine de l'entreprise de
+ *   chaque prospect, en déduit son adresse (pattern du site + SMTP).
  */
 import { db } from "../../db.js";
-import { crawlEmails, deaccent, findDomain, normName } from "./domain.js";
-import { inferPattern, isGenericEmail, probeSmtp, resolveEmail, type Pattern } from "./emails.js";
-import { findLinkedIn, findPeopleByRole } from "./linkedin.js";
-import type { Dirigeant } from "./annuaire.js";
-
-export interface EnrichOptions {
-  emails: boolean;
-  linkedin: boolean;
-  people: string | null; // mot-clé de fonction à chercher sur LinkedIn (ex. "commercial")
-}
+import { crawlEmails, findDomain } from "./domain.js";
+import { inferPattern, probeSmtp, resolveEmail } from "./emails.js";
+import {
+  allEnginesQuarantined,
+  buildQueries,
+  fetchProspectsPage,
+  roleMatches,
+  roleTerms,
+  scrapeProspects,
+  type PeopleSearchParams,
+  type Prospect,
+} from "./linkedin.js";
+import { hasSearchApi } from "./search.js";
 
 export interface JobState {
   running: boolean;
-  total: number;
-  done: number;
-  current: string | null; // nom de l'entreprise en cours
+  mode: "prospect" | "emails";
+  target: number; // prospects voulus (mode prospect)
+  found: number; // prospects ajoutés (ou emails trouvés en mode emails)
+  done: number; // requêtes traitées (ou entreprises traitées en mode emails)
+  total: number; // requêtes planifiées (ou entreprises à traiter)
+  current: string | null; // requête ou entreprise en cours
   errors: string[];
-  emails_found: number;
-  linkedin_found: number;
-  people_found: number;
 }
 
 const state: JobState = {
   running: false,
-  total: 0,
+  mode: "prospect",
+  target: 0,
+  found: 0,
   done: 0,
+  total: 0,
   current: null,
   errors: [],
-  emails_found: 0,
-  linkedin_found: 0,
-  people_found: 0,
 };
 
-export function jobStatus(): JobState {
-  return { ...state, errors: [...state.errors] };
+interface ProspectRun {
+  params: PeopleSearchParams;
+  terms: string[]; // termes acceptés au filtrage (poste exact + équivalents)
+  searchId: number; // scope « recherche en cours » des prospects insérés
+  target: number;
+  found: number;
+  units: Array<{ query: string; page: number }>; // file restante (pages 0..9 de chaque requête)
+  dead: Set<string>; // requêtes épuisées (page incomplète, ou déjà passées en scraping)
 }
+
+// Dernière recherche : sert aussi après la fin du job (scope du tableau,
+// bouton « chercher plus » qui reprend la file où elle s'est arrêtée).
+let run: ProspectRun | null = null;
+
+export function currentSearchId(): number | null {
+  return run?.searchId ?? null;
+}
+
+export function jobStatus(): JobState & { search_id: number | null; has_more: boolean } {
+  return {
+    ...state,
+    errors: [...state.errors],
+    search_id: run?.searchId ?? null,
+    has_more: Boolean(run && run.units.some((u) => !run!.dead.has(u.query))),
+  };
+}
+
+const API_PAGES = 10; // Google CSE s'arrête à start=91 ; Serper/Brave suivent
+const NO_API_MSG =
+  "Les moteurs publics sont tous en quarantaine (anti-bot) — recherche interrompue, « Chercher plus » " +
+  "reprendra plus tard. Pour des résultats fiables et massifs, ajoutez une clé d'API de recherche " +
+  "gratuite dans .env (SERPER_API_KEY recommandé, voir .env.example).";
+
+/**
+ * Identifiant stable d'une recherche : les mêmes paramètres (poste,
+ * localisation, secteur) retombent sur le même scope — relancer la recherche
+ * demain accumule dans le même tableau au lieu d'en repartir un nouveau.
+ */
+function searchIdFor(params: PeopleSearchParams): number {
+  const clean = (s?: string) => (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const key = [clean(params.role), clean(params.location), clean(params.sector)].join("|");
+  const row = db.prepare("SELECT search_id FROM searches WHERE key = ?").get(key) as
+    | { search_id: number }
+    | undefined;
+  if (row) return row.search_id;
+  const id = Date.now();
+  db.prepare("INSERT INTO searches (key, search_id) VALUES (?, ?)").run(key, id);
+  return id;
+}
+
+/** Slug normalisé d'une URL de profil : identité du prospect (dédoublonnage). */
+function linkedinKey(url: string): string {
+  let slug = url.split("/in/")[1] ?? url;
+  try {
+    slug = decodeURIComponent(slug);
+  } catch {
+    /* encodage partiel : on garde brut */
+  }
+  return slug.toLowerCase().replace(/\/+$/, "");
+}
+
+const insertProspect = db.prepare(`
+  INSERT OR IGNORE INTO prospects (first_name, last_name, role, company, location, linkedin, linkedin_key, search_role, search_id)
+  VALUES (@first_name, @last_name, @role, @company, @location, @linkedin, @linkedin_key, @search_role, @search_id)
+`);
+
+/** Insère les personnes au bon poste ; renvoie le nombre de nouvelles lignes. */
+function keepProspects(prospects: Prospect[], r: ProspectRun): number {
+  let added = 0;
+  for (const p of prospects) {
+    // précision avant rappel : seuls les postes correspondant au mot-clé entrent
+    if (!roleMatches(p.role, r.terms)) continue;
+    const { changes } = insertProspect.run({
+      ...p,
+      linkedin_key: linkedinKey(p.linkedin),
+      search_role: r.params.role,
+      search_id: r.searchId,
+    });
+    added += changes;
+  }
+  return added;
+}
+
+/**
+ * Lance la recherche de personnes en tâche de fond. `cont` reprend la file de
+ * la recherche précédente avec `target` prospects EN PLUS (pages suivantes,
+ * requêtes restantes). Renvoie false si un job tourne déjà.
+ */
+export function startProspecting(params: PeopleSearchParams, target: number, cont: boolean): boolean {
+  if (state.running) return false;
+  if (cont && run) {
+    run.target = run.found + target;
+    // sans API, les quarantaines expirent : les requêtes redeviennent tentables
+    if (!hasSearchApi()) run.dead.clear();
+  } else {
+    const queries = buildQueries(params);
+    const units: ProspectRun["units"] = [];
+    // pages en largeur d'abord : page 0 de chaque requête, puis page 1…
+    // les premiers prospects arrivent vite et de requêtes variées
+    for (let page = 0; page < API_PAGES; page++) for (const query of queries) units.push({ query, page });
+    run = { params, terms: roleTerms(params.role), searchId: searchIdFor(params), target, found: 0, units, dead: new Set() };
+  }
+  const r = run;
+
+  state.running = true;
+  state.mode = "prospect";
+  state.target = r.target;
+  state.found = r.found;
+  state.done = 0;
+  state.total = r.units.filter((u) => !r.dead.has(u.query)).length;
+  state.current = null;
+  state.errors = [];
+
+  void (async () => {
+    try {
+      while (r.found < r.target && r.units.length) {
+        const unit = r.units.shift()!;
+        if (r.dead.has(unit.query)) continue;
+        state.current = unit.query.replace(/^site:\S+\s+/, ""); // libellé lisible
+        let prospects: Prospect[];
+        const api = await fetchProspectsPage(unit.query, unit.page, r.terms);
+        if (api !== null) {
+          prospects = api.prospects;
+          if (api.raw < 10) r.dead.add(unit.query); // plus de pages à attendre
+        } else {
+          // pas d'API (ou plus disponible) : scraping public — une seule passe
+          // par requête, les pages sont gérées moteur par moteur
+          if (unit.page > 0) {
+            r.dead.add(unit.query);
+            continue;
+          }
+          prospects = (await scrapeProspects(unit.query, r.terms, { engines: 3, pages: 2 })) ?? [];
+          r.dead.add(unit.query);
+          if (!prospects.length && allEnginesQuarantined()) {
+            state.errors.push(NO_API_MSG);
+            break;
+          }
+        }
+        const added = keepProspects(prospects, r);
+        r.found += added;
+        state.found = r.found;
+        state.done++;
+      }
+    } catch (err) {
+      state.errors.push(err instanceof Error ? err.message : String(err));
+    }
+    state.running = false;
+    state.current = null;
+  })();
+  return true;
+}
+
+// --- Emails (optionnel, pour l'export campagne) -------------------------------
 
 /** Domaine HELO pour le dialogue SMTP : celui du premier compte connecté. */
 function heloDomain(): string {
@@ -51,241 +205,78 @@ function heloDomain(): string {
   return row?.email.split("@")[1] ?? "example.com";
 }
 
-interface CompanyRow {
-  siren: string;
-  name: string;
-  brand: string | null;
-  ville: string | null;
-  domain: string | null;
-  domain_status: string | null;
-  raw: string | null;
-}
-
-function dirigeantsOf(company: CompanyRow): Dirigeant[] {
-  if (!company.raw) return [];
-  try {
-    const raw = JSON.parse(company.raw) as { dirigeants_parsed?: Dirigeant[] };
-    return raw.dirigeants_parsed ?? [];
-  } catch {
-    return [];
-  }
-}
-
-/** Garantit une ligne de prospect par dirigeant (sans toucher aux lignes existantes). */
-export function ensureDirigeantLeads(siren: string, dirigeants: Dirigeant[]): void {
-  const exists = db.prepare(
-    "SELECT 1 FROM b2b_leads WHERE siren = ? AND first_name = ? AND last_name = ? LIMIT 1"
-  );
-  const ins = db.prepare(
-    `INSERT INTO b2b_leads (siren, first_name, last_name, role, email, email_status, source)
-     VALUES (?, ?, ?, ?, NULL, 'pending', 'dirigeant')`
-  );
-  for (const d of dirigeants) {
-    if (!exists.get(siren, d.first_name, d.last_name)) ins.run(siren, d.first_name, d.last_name, d.role);
-  }
+interface ProspectRow {
+  id: number;
+  first_name: string;
+  last_name: string;
+  company: string | null;
 }
 
 /**
- * Cherche des personnes par fonction (ex. commerciaux) via les moteurs et les
- * insère comme prospects (source 'linkedin'). Les personnes déjà connues
- * (dirigeants…) reçoivent juste leur URL LinkedIn. Renvoie le nombre ajouté.
+ * Cherche l'email professionnel des prospects donnés : domaine deviné depuis
+ * le nom d'entreprise, pattern d'adressage du site, vérification SMTP quand
+ * c'est possible. Renvoie false si un job tourne déjà.
  */
-async function enrichCompanyPeople(company: CompanyRow, keyword: string): Promise<number> {
-  const queryName = company.brand?.split(/\s+-\s+/)[0] ?? company.name;
-  const found = await findPeopleByRole(queryName, keyword);
-  if (!found.length) return 0;
-  const existing = db
-    .prepare("SELECT id, first_name, last_name, linkedin FROM b2b_leads WHERE siren = ? AND first_name IS NOT NULL")
-    .all(company.siren) as Array<{ id: number; first_name: string; last_name: string; linkedin: string | null }>;
-  const byName = new Map(existing.map((r) => [normName(r.first_name + r.last_name), r]));
-  const ins = db.prepare(
-    `INSERT INTO b2b_leads (siren, first_name, last_name, role, email, email_status, source, linkedin)
-     VALUES (?, ?, ?, ?, NULL, 'pending', 'linkedin', ?)`
-  );
-  const updLinkedin = db.prepare("UPDATE b2b_leads SET linkedin = ? WHERE id = ?");
-  let added = 0;
-  db.transaction(() => {
-    for (const p of found) {
-      const known = byName.get(normName(p.first_name + p.last_name));
-      if (known) {
-        if (!known.linkedin) updLinkedin.run(p.linkedin, known.id);
-        continue;
-      }
-      ins.run(company.siren, p.first_name, p.last_name, p.role, p.linkedin);
-      added++;
-    }
-  })();
-  return added;
-}
-
-/** Pipeline emails : domaine, crawl, pattern, SMTP. Renvoie le nombre d'emails trouvés. */
-async function enrichCompanyEmails(company: CompanyRow, helo: string): Promise<number> {
-  // 1. Domaine (conservé s'il a déjà été trouvé ou saisi manuellement)
-  let domain = company.domain;
-  let domainStatus = company.domain_status;
-  let homepage: string | undefined;
-  if (!domain) {
-    const found = await findDomain(company);
-    domain = found?.domain ?? null;
-    domainStatus = found?.status ?? "not_found";
-    homepage = found?.homepage;
-  }
-
-  const dirigeants = dirigeantsOf(company);
-  const dirigeantNames = new Set(dirigeants.map((d) => normName(d.first_name + d.last_name)));
-  // personnes trouvées par recherche LinkedIn (commerciaux…) : conservées lors
-  // de la reconstruction et enrichies en email comme les dirigeants
-  const externals = (db
-    .prepare(
-      "SELECT first_name, last_name, role, linkedin FROM b2b_leads WHERE siren = ? AND source = 'linkedin' AND first_name IS NOT NULL"
-    )
-    .all(company.siren) as Array<{ first_name: string; last_name: string; role: string | null; linkedin: string | null }>)
-    .filter((e) => !dirigeantNames.has(normName(e.first_name + e.last_name)));
-  const people = [
-    ...dirigeants.map((d) => ({ ...d, source: "dirigeant" })),
-    ...externals.map((e) => ({ first_name: e.first_name, last_name: e.last_name, role: e.role ?? "", source: "linkedin" })),
-  ];
-  // LinkedIn déjà trouvés : à reporter sur les leads reconstruits
-  const prevLinkedin = new Map(
-    (db.prepare("SELECT first_name, last_name, linkedin FROM b2b_leads WHERE siren = ? AND linkedin IS NOT NULL").all(company.siren) as Array<{ first_name: string | null; last_name: string | null; linkedin: string }>)
-      .map((r) => [`${r.first_name}|${r.last_name}`, r.linkedin])
-  );
-  const leads: Array<{
-    first_name: string | null;
-    last_name: string | null;
-    role: string;
-    email: string | null;
-    email_status: string;
-    source: string;
-    linkedin: string | null;
-  }> = [];
-  const withLinkedin = (l: Omit<(typeof leads)[number], "linkedin">) => ({
-    ...l,
-    linkedin: prevLinkedin.get(`${l.first_name}|${l.last_name}`) ?? null,
-  });
-  let pattern: Pattern | null = null;
-  let smtpState: string | null = null;
-
-  if (domain) {
-    // 2. Crawl du site : emails publiés + pattern d'adressage
-    const { emails } = await crawlEmails(domain, homepage);
-    pattern = inferPattern(emails, people);
-    for (const email of emails.filter(isGenericEmail).slice(0, 3)) {
-      leads.push(withLinkedin({ first_name: null, last_name: null, role: "Email générique", email, email_status: "generic", source: "site" }));
-    }
-    // emails nominatifs publiés sur le site : déjà vérifiés de fait
-    for (const email of emails.filter((e) => !isGenericEmail(e)).slice(0, 10)) {
-      const matching = people.find((p) =>
-        [p.first_name, p.last_name].some((n) => n && email.split("@")[0].includes(deaccent(n.toLowerCase())))
-      );
-      leads.push(withLinkedin({
-        first_name: matching?.first_name ?? null,
-        last_name: matching?.last_name ?? null,
-        role: matching?.role || "Trouvé sur le site",
-        email,
-        email_status: "verified",
-        source: "site",
-      }));
-    }
-
-    // 3. Vérification SMTP + email par personne (dirigeants + profils LinkedIn)
-    const probe = await probeSmtp(domain, helo);
-    smtpState = probe.reachable ? (probe.catchAll ? "catch_all" : "ok") : "unreachable";
-    try {
-      for (const p of people) {
-        if (leads.some((l) => l.first_name === p.first_name && l.last_name === p.last_name)) continue;
-        const r = await resolveEmail(p.first_name, p.last_name, domain, pattern, probe);
-        leads.push(withLinkedin({ first_name: p.first_name, last_name: p.last_name, role: p.role, email: r.email, email_status: r.status, source: p.source }));
-      }
-    } finally {
-      probe.close();
-    }
-  } else {
-    for (const p of people) {
-      leads.push(withLinkedin({ first_name: p.first_name, last_name: p.last_name, role: p.role, email: null, email_status: "no_domain", source: p.source }));
-    }
-  }
-
-  // 4. Persistance (remplace les leads précédents de l'entreprise)
-  db.transaction(() => {
-    db.prepare(
-      `UPDATE b2b_companies SET domain = ?, domain_status = ?, email_pattern = ?, smtp = ?, enriched_at = ? WHERE siren = ?`
-    ).run(domain, domainStatus, pattern, smtpState, Date.now(), company.siren);
-    db.prepare("DELETE FROM b2b_leads WHERE siren = ?").run(company.siren);
-    const ins = db.prepare(
-      `INSERT INTO b2b_leads (siren, first_name, last_name, role, email, email_status, source, linkedin)
-       VALUES (@siren, @first_name, @last_name, @role, @email, @email_status, @source, @linkedin)`
-    );
-    for (const l of leads) ins.run({ siren: company.siren, ...l });
-  })();
-  return leads.filter((l) => l.email).length;
-}
-
-/** Cherche le LinkedIn des prospects nommés qui n'en ont pas encore. */
-async function enrichCompanyLinkedin(company: CompanyRow): Promise<number> {
+export function startEmailJob(ids: number[]): boolean {
+  if (state.running) return false;
+  const placeholders = ids.map(() => "?").join(",");
   const rows = db
     .prepare(
-      `SELECT id, first_name, last_name FROM b2b_leads
-       WHERE siren = ? AND linkedin IS NULL AND first_name IS NOT NULL AND last_name IS NOT NULL`
+      `SELECT id, first_name, last_name, company FROM prospects WHERE id IN (${placeholders}) AND email IS NULL`
     )
-    .all(company.siren) as Array<{ id: number; first_name: string; last_name: string }>;
-  const update = db.prepare("UPDATE b2b_leads SET linkedin = ? WHERE id = ?");
-  let found = 0;
-  for (const r of rows) {
-    const url = await findLinkedIn(r.first_name, r.last_name, company.brand ?? company.name);
-    if (url) {
-      update.run(url, r.id);
-      found++;
-    }
-  }
-  return found;
-}
+    .all(...ids) as ProspectRow[];
 
-/** Lance l'enrichissement en tâche de fond. Renvoie false si un job tourne déjà. */
-export function startEnrich(sirens: string[], opts: EnrichOptions): boolean {
-  if (state.running) return false;
-  const placeholders = sirens.map(() => "?").join(",");
-  const companies = db
-    .prepare(
-      `SELECT siren, name, brand, ville, domain, domain_status, raw FROM b2b_companies WHERE siren IN (${placeholders})`
-    )
-    .all(...sirens) as CompanyRow[];
+  // sans entreprise, pas de domaine à chercher
+  const noCompany = rows.filter((p) => !p.company);
+  const setStatus = db.prepare("UPDATE prospects SET email_status = ? WHERE id = ?");
+  for (const p of noCompany) setStatus.run("no_domain", p.id);
+
+  const groups = new Map<string, ProspectRow[]>();
+  for (const p of rows) {
+    if (!p.company) continue;
+    const key = p.company.toLowerCase();
+    if (groups.has(key)) groups.get(key)!.push(p);
+    else groups.set(key, [p]);
+  }
 
   state.running = true;
-  state.total = companies.length;
+  state.mode = "emails";
+  state.target = 0;
+  state.found = 0;
   state.done = 0;
+  state.total = groups.size;
   state.current = null;
   state.errors = [];
-  state.emails_found = 0;
-  state.linkedin_found = 0;
-  state.people_found = 0;
 
   const helo = heloDomain();
+  const updEmail = db.prepare("UPDATE prospects SET email = ?, email_status = ? WHERE id = ?");
   void (async () => {
-    // 2 entreprises en parallèle : assez rapide sans matraquer les sites ni les moteurs
-    const queue = [...companies];
+    // 2 entreprises en parallèle : assez rapide sans matraquer les sites
+    const queue = [...groups.values()];
     const worker = async () => {
-      for (let c = queue.shift(); c; c = queue.shift()) {
-        state.current = c.name;
+      for (let group = queue.shift(); group; group = queue.shift()) {
+        const company = group[0].company!;
+        state.current = company;
         try {
-          // pas de `state.x += await …` : la valeur serait capturée avant l'await
-          // et les deux workers parallèles s'écraseraient mutuellement
-          if (opts.people) {
-            const n = await enrichCompanyPeople(c, opts.people);
-            state.people_found += n;
-          }
-          if (opts.emails) {
-            const n = await enrichCompanyEmails(c, helo);
-            state.emails_found += n;
+          const dom = await findDomain({ name: company, brand: null, ville: null });
+          if (!dom) {
+            for (const p of group) setStatus.run("no_domain", p.id);
           } else {
-            ensureDirigeantLeads(c.siren, dirigeantsOf(c));
-          }
-          if (opts.linkedin) {
-            const n = await enrichCompanyLinkedin(c);
-            state.linkedin_found += n;
+            const { emails } = await crawlEmails(dom.domain, dom.homepage);
+            const pattern = inferPattern(emails, group);
+            const probe = await probeSmtp(dom.domain, helo);
+            try {
+              for (const p of group) {
+                const r = await resolveEmail(p.first_name, p.last_name, dom.domain, pattern, probe);
+                updEmail.run(r.email, r.status, p.id);
+                if (r.email) state.found++;
+              }
+            } finally {
+              probe.close();
+            }
           }
         } catch (err) {
-          state.errors.push(`${c.name} : ${err instanceof Error ? err.message : err}`);
+          state.errors.push(`${company} : ${err instanceof Error ? err.message : err}`);
         }
         state.done++;
       }
