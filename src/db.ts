@@ -103,10 +103,21 @@ CREATE TABLE IF NOT EXISTS prospects (
   email_status TEXT NOT NULL DEFAULT 'pending', -- pending | verified | pattern | probable | not_found | no_domain
   search_role TEXT,                      -- poste saisi lors de la recherche
   search_id INTEGER,                     -- identifiant de la recherche (scope « recherche en cours »)
+  company_effectif TEXT,                 -- tranche d'effectifs INSEE de l'entreprise (registre)
+  company_section TEXT,                  -- section NAF de l'entreprise (registre)
+  company_ca INTEGER,                    -- dernier CA connu de l'entreprise (€, registre)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
 CREATE INDEX IF NOT EXISTS idx_prospects_search ON prospects (search_id);
+
+-- Cache de l'enrichissement entreprise (API publique Recherche d'Entreprises) :
+-- une boîte rencontrée dans les résultats n'est résolue qu'une fois.
+CREATE TABLE IF NOT EXISTS company_cache (
+  name_key TEXT PRIMARY KEY,             -- nom normalisé
+  info TEXT NOT NULL,                    -- JSON CompanyInfo | null
+  fetched_at INTEGER NOT NULL
+);
 
 -- Cache des pages de résultats de l'API de recherche : une page déjà payée ne
 -- reconsomme jamais de crédit (les profils bougent peu d'un jour à l'autre).
@@ -180,6 +191,12 @@ addColumnIfMissing("campaign_contacts", "variant", "variant TEXT");
 addColumnIfMissing("campaign_contacts", "handled_msgs", "handled_msgs TEXT");
 addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("b2b_leads", "linkedin", "linkedin TEXT");
+addColumnIfMissing("prospects", "company_effectif", "company_effectif TEXT");
+addColumnIfMissing("prospects", "company_section", "company_section TEXT");
+addColumnIfMissing("prospects", "company_ca", "company_ca INTEGER");
+// curseur d'énumération du registre (mode « ciblage par entreprises ») : une
+// recherche relancée (ou un serveur redémarré) reprend où elle s'était arrêtée
+addColumnIfMissing("searches", "reg_page", "reg_page INTEGER");
 
 // v1 : la signature n'est plus ajoutée automatiquement en fin d'email mais placée
 // via {{signature}} — les étapes existantes la reçoivent en fin de corps pour

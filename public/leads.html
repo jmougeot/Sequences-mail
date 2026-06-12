@@ -13,9 +13,10 @@
     <span id="searchApiBadge"></span>
   </div>
   <p class="muted" style="margin-top:-8px">
-    Tapez le poste recherché et, si besoin, une localisation : les profils LinkedIn correspondants sont
-    cherchés en continu jusqu'à votre quota. Seules les personnes dont le poste correspond sont gardées
-    (nom, poste, entreprise, profil). Export CSV direct ; « Trouver les emails » pour l'ajout à une campagne.
+    Tapez un poste puis Entrée pour l'ajouter — autant de postes que vous voulez — et, si besoin, une localisation : les profils
+    LinkedIn correspondants sont cherchés en continu jusqu'à votre quota. Seules les personnes dont le poste
+    correspond sont gardées (nom, poste, entreprise, profil). Export CSV direct ; « Trouver les emails » pour
+    l'ajout à une campagne.
   </p>
 
   <!-- Recherche -->
@@ -23,16 +24,12 @@
     <h2>Rechercher des personnes</h2>
     <div class="row" style="align-items:flex-end">
       <div class="grow">
-        <label class="muted">Poste recherché</label>
-        <input id="fPoste" placeholder="ex. account executive, directeur marketing, commercial…">
+        <label class="muted">Poste(s) recherché(s) — Entrée pour ajouter</label>
+        <div class="tagbox" id="fPoste"><input placeholder="ex. directeur commercial"></div>
       </div>
       <div class="grow">
-        <label class="muted">Localisation (villes, régions — optionnel)</label>
-        <input id="fLoc" placeholder="ex. Paris, Lyon">
-      </div>
-      <div class="grow">
-        <label class="muted">Secteur / mots-clés (optionnel)</label>
-        <input id="fSecteur" placeholder="ex. immobilier, SaaS, agence…">
+        <label class="muted">Mots-clés à exclure (optionnel) — Entrée pour ajouter</label>
+        <div class="tagbox" id="fExclure"><input placeholder="ex. stagiaire"></div>
       </div>
       <div style="flex:0 0 110px">
         <label class="muted">Prospects voulus</label>
@@ -42,6 +39,52 @@
         <button onclick="search(false)" id="searchBtn">Rechercher</button>
       </div>
     </div>
+    <div class="row" style="margin-top:8px;align-items:flex-end">
+      <div class="grow">
+        <label class="muted">Localisation (villes, régions — optionnel) — Entrée pour ajouter</label>
+        <div class="tagbox" id="fLoc"><input placeholder="ex. Paris"></div>
+      </div>
+      <div style="flex:0 0 auto">
+        <label class="muted" style="display:flex;align-items:center;gap:6px;padding-bottom:8px"
+          title="Restreint aux profils fr.linkedin.com (membres situés en France)">
+          <input type="checkbox" id="fFrance" checked style="width:auto"> France uniquement
+        </label>
+      </div>
+      <div class="grow">
+        <label class="muted">Mots-clés (optionnel)</label>
+        <input id="fSecteur" placeholder="ex. SaaS, immobilier…">
+      </div>
+    </div>
+    <details style="margin-top:10px">
+      <summary class="muted" style="cursor:pointer">Filtres sur les entreprises (taille, secteur, CA — France, via le registre des entreprises)</summary>
+      <div class="row" style="margin-top:8px;align-items:flex-end">
+        <div style="flex:0 0 200px">
+          <label class="muted">Taille d'entreprise</label>
+          <select id="fTaille">
+            <option value="">Toutes tailles</option>
+            <option value="00,01,02,03">1 à 9 salariés</option>
+            <option value="11,12">10 à 49 salariés</option>
+            <option value="21,22,31">50 à 249 salariés</option>
+            <option value="32,41">250 à 999 salariés</option>
+            <option value="42,51,52,53">1 000 salariés et +</option>
+          </select>
+        </div>
+        <div style="flex:0 0 280px">
+          <label class="muted">Secteur d'activité</label>
+          <select id="fNaf"><option value="">Tous les secteurs</option></select>
+        </div>
+        <div style="flex:0 0 150px">
+          <label class="muted">CA minimum (€)</label>
+          <input id="fCaMin" type="number" placeholder="ex. 1000000">
+        </div>
+      </div>
+      <p class="muted" style="margin:6px 0 0">
+        France uniquement. Avec ces filtres, la recherche change de stratégie : les entreprises
+        correspondantes sont listées depuis le registre (gratuit), puis chaque boîte est ciblée par sa
+        propre requête LinkedIn — beaucoup plus de résultats, y compris des PME peu connues, au lieu
+        des ~100 profils que rapporte une recherche générique.
+      </p>
+    </details>
   </div>
 
   <!-- Prospects -->
@@ -69,7 +112,7 @@
     <table style="margin-top:10px">
       <thead><tr>
         <th style="width:28px"><input type="checkbox" id="ckAll" onchange="toggleAll(this.checked)"></th>
-        <th>Contact</th><th>Poste</th><th>Entreprise</th><th>Localisation</th><th>LinkedIn</th><th>Email</th>
+        <th>Contact</th><th>Poste</th><th>Entreprise</th><th>Taille</th><th>Localisation</th><th>LinkedIn</th><th>Email</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -99,11 +142,62 @@ const EMAIL_STATUS = {
 };
 const state = { jobRunning: false, hasSearch: false };
 
+/*
+ * Champ à puces : Entrée (ou virgule, ou perte de focus) ajoute la valeur tapée,
+ * × ou Retour arrière (champ vide) retire. Un texte collé avec des virgules est
+ * découpé en plusieurs puces. `value()` rend les puces jointes par des virgules,
+ * le format que l'API découpe déjà.
+ */
+function tagInput(sel) {
+  const box = $(sel);
+  const input = box.querySelector("input");
+  const placeholder = input.placeholder;
+  const values = [];
+  function render() {
+    box.querySelectorAll(".tag").forEach((t) => t.remove());
+    values.forEach((v, i) => {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = v;
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "×";
+      x.title = "Retirer";
+      x.onclick = (e) => { e.stopPropagation(); values.splice(i, 1); render(); };
+      tag.appendChild(x);
+      box.insertBefore(tag, input);
+    });
+    input.placeholder = values.length ? "" : placeholder;
+  }
+  function add(text) {
+    for (const part of String(text).split(/[,;]+/)) {
+      const v = part.trim();
+      if (v && !values.some((x) => x.toLowerCase() === v.toLowerCase())) values.push(v);
+    }
+    input.value = "";
+    render();
+  }
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(input.value); }
+    else if (e.key === "Backspace" && !input.value && values.length) { values.pop(); render(); }
+  });
+  input.addEventListener("blur", () => add(input.value));
+  box.addEventListener("click", () => input.focus());
+  return { value: () => values.join(", "), count: () => values.length };
+}
+
+const fPoste = tagInput("#fPoste");
+const fExclure = tagInput("#fExclure");
+const fLoc = tagInput("#fLoc");
+
 async function init() {
   const meta = await api("/api/b2b/meta");
   $("#searchApiBadge").innerHTML = meta.search_api
     ? '<span class="pill replied" title="Une API de recherche est configurée dans .env">API de recherche active</span>'
     : '<span class="pill held" title="Aucune clé d\'API de recherche : profils cherchés via moteurs publics, résultats limités. Une clé gratuite (Serper recommandé) fiabilise et multiplie les résultats — voir .env.example">moteurs publics — résultats limités</span>';
+  // secteurs d'activité (sections NAF) pour le filtre entreprise
+  $("#fNaf").innerHTML += Object.entries(meta.sections || {})
+    .map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   const campaigns = await api("/api/campaigns");
   $("#exportCampaign").innerHTML += campaigns
     .map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
@@ -123,9 +217,14 @@ function targetValue() {
 
 async function search(more) {
   const body = {
-    poste: $("#fPoste").value.trim() || undefined,
-    localisation: $("#fLoc").value.trim() || undefined,
+    poste: fPoste.value() || undefined,
+    exclure: fExclure.value() || undefined,
+    localisation: fLoc.value() || undefined,
     secteur: $("#fSecteur").value.trim() || undefined,
+    france: $("#fFrance").checked,
+    taille: $("#fTaille").value || undefined,
+    secteur_naf: $("#fNaf").value || undefined,
+    ca_min: $("#fCaMin").value || undefined,
     target: targetValue(),
     continue: more,
   };
@@ -231,13 +330,14 @@ async function loadProspects() {
       <td><input type="checkbox" class="ck" value="${p.id}"></td>
       <td><b>${esc(p.first_name)} ${esc(p.last_name)}</b>${p.in_contacts ? ' <span class="muted" title="déjà dans vos contacts">✓ importé</span>' : ""}</td>
       <td>${esc(p.role || "—")}</td>
-      <td>${esc(p.company || "—")}</td>
+      <td>${esc(p.company || "—")}${p.company_sector ? `<br><span class="muted" style="font-size:.85em">${esc(p.company_sector)}</span>` : ""}</td>
+      <td>${esc(p.company_size || "—")}</td>
       <td>${esc(p.location || "—")}</td>
       <td><a href="${esc(p.linkedin)}" target="_blank" rel="noopener">Profil ↗</a></td>
       <td>${p.email ? esc(p.email) + (label ? ` <span class="pill ${cls}">${esc(label)}</span>` : "")
         : (label ? `<span class="pill ${cls}">${esc(label)}</span>` : '<span class="muted">—</span>')}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="7" class="muted">${emptyMsg}</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted">${emptyMsg}</td></tr>`;
   $("#count").textContent = prospects.length
     ? `${prospects.length} prospect(s) · ${prospects.filter((p) => p.email).length} avec email`
     : "";

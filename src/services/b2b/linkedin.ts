@@ -363,27 +363,74 @@ function parseProspect(url: string, titles: string[], extraText: string, terms: 
 // --- Requêtes et collecte -----------------------------------------------------
 
 export interface PeopleSearchParams {
-  role: string; // poste recherché (texte libre, requis)
+  roles: string[]; // postes recherchés (texte libre, au moins un)
+  exclude?: string[]; // mots-clés à bannir du titre/de l'entreprise (ex. "senior")
   location?: string; // villes/régions, séparées par des virgules (optionnel)
   sector?: string; // mots-clés libres ajoutés à la requête (optionnel)
+  franceOnly?: boolean; // limite aux profils fr.linkedin.com (membres en France)
+}
+
+/** Localisations demandées, découpées (« Paris, Lyon » → ["Paris", "Lyon"]). */
+export function locationList(location?: string): string[] {
+  return (location ?? "").split(/[,;/]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+/** Tous les termes acceptés au filtrage pour une liste de postes (union, dédupliquée). */
+export function allRoleTerms(roles: string[]): string[] {
+  return [...new Set(roles.flatMap((r) => roleTerms(r)))];
+}
+
+/** Le texte contient-il un mot-clé exclu ? (comparaison sans accents/casse) */
+export function isExcluded(text: string | null, exclude: string[]): boolean {
+  if (!text || !exclude.length) return false;
+  const t = deaccent(text.toLowerCase());
+  return exclude.some((e) => {
+    const w = deaccent(e.toLowerCase()).trim();
+    return w.length > 0 && t.includes(w);
+  });
 }
 
 /**
- * Requêtes du plan de recherche : une par terme de poste × localisation.
- * Chaque requête a son propre espace de résultats (~10 par page, jusqu'à
- * ~10 pages via l'API) : multiplier les requêtes multiplie les profils.
+ * Requête ciblée sur UNE entreprise (mode « ciblage par entreprises ») : les
+ * postes — tous synonymes confondus, 4 max, en OR — doivent apparaître avec le
+ * nom de la boîte. Chaque entreprise ouvre ainsi son propre espace de résultats,
+ * au lieu d'écumer les ~100 résultats d'une requête générique. Localisation et
+ * mots-clés secteur sont volontairement omis (la requête est déjà très étroite) ;
+ * ils restent appliqués au filtrage des résultats.
+ */
+export function companyQuery(params: PeopleSearchParams, companyName: string): string {
+  const site = params.franceOnly ? "site:fr.linkedin.com/in" : "site:linkedin.com/in";
+  const terms = allRoleTerms(params.roles).slice(0, 4);
+  const block = terms.length > 1 ? `(${terms.map((t) => `"${t}"`).join(" OR ")})` : `"${terms[0] ?? ""}"`;
+  const neg = (params.exclude ?? []).map((e) => `-"${e}"`).join(" ");
+  return `${site} ${block} "${companyName}"${neg ? ` ${neg}` : ""}`;
+}
+
+/**
+ * Requêtes du plan de recherche : une par poste × terme × localisation. Chaque
+ * requête a son propre espace de résultats (~10 par page, jusqu'à ~10 pages via
+ * l'API) : multiplier les requêtes multiplie les profils. Les mots-clés exclus
+ * partent en opérateur `-"mot"` (Google/Serper les retirent à la source) en
+ * plus du filtrage côté résultats. LinkedIn publie les profils des membres
+ * français sous fr.linkedin.com : `franceOnly` restreint à ce sous-domaine,
+ * bien plus précis qu'un mot-clé de ville pour écarter les profils hors France.
  */
 export function buildQueries(params: PeopleSearchParams): string[] {
-  const terms = roleTerms(params.role).slice(0, 6);
-  const locations = (params.location ?? "").split(/[,;/]+/).map((s) => s.trim()).filter(Boolean);
+  const site = params.franceOnly ? "site:fr.linkedin.com/in" : "site:linkedin.com/in";
+  const locations = locationList(params.location);
   const sector = (params.sector ?? "").trim();
+  const neg = (params.exclude ?? []).map((e) => `-"${e}"`).join(" ");
   const queries: string[] = [];
-  for (const loc of locations.length ? locations : [""]) {
-    for (const t of terms) {
-      queries.push(`site:linkedin.com/in "${t}"${loc ? ` "${loc}"` : ""}${sector ? ` ${sector}` : ""}`);
+  for (const role of params.roles) {
+    for (const t of roleTerms(role).slice(0, 6)) {
+      for (const loc of locations.length ? locations : [""]) {
+        queries.push(
+          `${site} "${t}"${loc ? ` "${loc}"` : ""}${sector ? ` ${sector}` : ""}${neg ? ` ${neg}` : ""}`
+        );
+      }
     }
   }
-  return queries;
+  return [...new Set(queries)];
 }
 
 /**
